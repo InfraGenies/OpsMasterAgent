@@ -24,34 +24,52 @@ agent-md-files/  Original spec — source of truth for prompts, sizing rules, co
 
 ## Setup
 
-### 1. Install
+### Quick start (Windows / PowerShell)
+
+```powershell
+npm start
+```
+
+Or double-click / run `.\start-app.ps1` directly. This one command: checks Node.js is installed (18+),
+warns (non-fatally) if Docker isn't, runs `npm install` if `node_modules` is missing, builds
+`@ops-master/shared`, creates a working `apps/server/.env` in mock mode if none exists yet, then starts
+both the server (`:4000`) and web UI (`:5173`) in the background and opens your browser once the server
+reports healthy. **No API keys or Supabase project required to get a running app** — everything works in
+mock/local-store mode out of the box; fill in real keys in `apps/server/.env` whenever you're ready (see
+below), no need to re-run the script.
+
+```powershell
+npm stop
+```
+
+Or `.\stop-app.ps1` — stops both processes (and their child processes; `npm`/`tsx`/`vite` fan out into
+several node processes on Windows, so this kills the whole tree via `taskkill /T`, not just the top PID),
+and as a fallback frees ports 4000/5173 if anything's still bound to them. Safe to run `npm start` again
+any time — it stops any previous instance first. Logs land in `.run/server.log` and `.run/web.log`.
+
+### Manual setup (any OS)
 
 ```bash
 npm install
+npm run build -w @ops-master/shared   # required once before first dev:server / dev:web
+cp apps/server/.env.example apps/server/.env
 ```
 
-### 2. Configure the server
-
-```bash
-cd apps/server
-cp .env.example .env
-```
-
-Fill in:
+Fill in `apps/server/.env`:
 - `ANTHROPIC_API_KEY` — from console.anthropic.com. **Optional for now**: if left blank, the server
   auto-enables `MOCK_LLM` and every LLM call is replaced with a deterministic stand-in (see
   [Mock mode](#mock-mode-no-api-key-needed)), so you can run the whole pipeline before wiring a real key.
 - `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` — create a free project at supabase.com, then
-  **Project Settings → API**. Also **optional for now**: if left blank, the server falls back to a local
+  **Project Settings → API Keys**. Use the **secret** key (`sb_secret_...` on newer projects, or the
+  legacy `service_role` JWT on older ones) — **not** the publishable/anon key, which RLS blocks from
+  every table by design. Also **optional for now**: if left blank, the server falls back to a local
   JSON file (`apps/server/data/local-store.json`) so you can run and demo everything without a Supabase
   project. Fill these in when you want real, durable, shared persistence.
 
 If you do set up Supabase, run [`supabase/schema.sql`](supabase/schema.sql) once in the SQL editor —
 it creates `runs`, `audit_events`, `environments`, `decisions` with RLS enabled and no anon policies
-(the server only ever talks to it with the service-role key, which bypasses RLS; nothing is reachable
+(the server only ever talks to it with the secret key, which bypasses RLS; nothing is reachable
 from a browser).
-
-### 3. Run
 
 ```bash
 # terminal 1
@@ -63,7 +81,7 @@ npm run dev:web         # http://localhost:5173
 
 Open http://localhost:5173, type a request, submit, and watch the pipeline run.
 
-### 4. Smoke test (no browser, no Docker required)
+### Smoke test (no browser, no Docker required)
 
 ```bash
 npm run smoke -w @ops-master/server

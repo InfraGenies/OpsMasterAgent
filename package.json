@@ -8,6 +8,8 @@
     "apps/*"
   ],
   "scripts": {
+    "start": "powershell -NoProfile -ExecutionPolicy Bypass -File ./start-app.ps1",
+    "stop": "powershell -NoProfile -ExecutionPolicy Bypass -File ./stop-app.ps1",
     "dev:server": "npm run dev -w @ops-master/server",
     "dev:web": "npm run dev -w @ops-master/web",
     "build": "npm run build -w @ops-master/shared && npm run build -w @ops-master/server && npm run build -w @ops-master/web",
