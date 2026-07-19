@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+apps/server/.env
+apps/web/.env
+apps/server/deployments/
+apps/server/data/local-store.json
+*.log
+.DS_Store

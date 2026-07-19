@@ -1,0 +1,23 @@
+{
+  "name": "ops-master-agent",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Ops Master Agent — infra lifecycle automation: NL request -> capacity plan -> IaC -> human approval -> deploy -> verify -> audited report",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev -w @ops-master/server",
+    "dev:web": "npm run dev -w @ops-master/web",
+    "build": "npm run build -w @ops-master/shared && npm run build -w @ops-master/server && npm run build -w @ops-master/web",
+    "typecheck": "npm run typecheck -w @ops-master/shared && npm run typecheck -w @ops-master/server && npm run typecheck -w @ops-master/web",
+    "smoke": "npm run smoke -w @ops-master/server"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

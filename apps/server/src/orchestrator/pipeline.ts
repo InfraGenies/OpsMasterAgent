@@ -1,0 +1,498 @@
+import path from "node:path";
+import type {
+  CapacityPlan,
+  DecisionAction,
+  EnvironmentRecord,
+  IaCPayload,
+  PlanRequest,
+} from "@ops-master/shared";
+import { env } from "../config.js";
+import { decodeSnapshot, encodeSnapshot } from "../nodes/envSnapshot.js";
+import { runDeploy } from "../nodes/deploy.js";
+import { runIacGenerator } from "../nodes/iacGenerator.js";
+import { runIntake } from "../nodes/intake.js";
+import { runPlanner } from "../nodes/planner.js";
+import { runReport } from "../nodes/report.js";
+import { runRollback } from "../nodes/rollback.js";
+import { runVerify } from "../nodes/verify.js";
+import { getStore, type AuditStore } from "../store/index.js";
+import { broadcastEvent } from "../ws/hub.js";
+import { logAudit, loadLatestNodeOutput } from "./audit.js";
+import { HttpError } from "./errors.js";
+import { envIdFor, generateRequestId, projectNameFor } from "./ids.js";
+
+const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>();
+
+function deploymentDirFor(requestId: string): string {
+  return path.join(env.DEPLOYMENTS_DIR, requestId);
+}
+
+function guessOperation(rawText: string): "create" | "modify" | "destroy" {
+  if (/\b(destroy|tear down|delete everything)\b/i.test(rawText)) return "destroy";
+  if (/\b(add|modify|update|extend|wire)\b/i.test(rawText)) return "modify";
+  return "create";
+}
+
+async function findLatestUpEnvironment(store: AuditStore): Promise<EnvironmentRecord | null> {
+  const envs = (await store.listEnvironments()).filter((e) => e.state === "up");
+  return envs.length ? envs[envs.length - 1] : null;
+}
+
+async function resolveExistingEnv(
+  store: AuditStore,
+  planRequest: PlanRequest
+): Promise<{ envId: string; capacityPlan: CapacityPlan; files: IaCPayload["files"] } | null> {
+  const envId = planRequest.existing_env_id ?? (await findLatestUpEnvironment(store))?.env_id ?? null;
+  if (!envId) return null;
+  const record = await store.getEnvironment(envId);
+  if (!record) return null;
+  const snap = decodeSnapshot(record);
+  return { envId, capacityPlan: snap.capacity_plan, files: snap.files };
+}
+
+// ---------------------------------------------------------------------------
+// Refusal / rollback terminal paths
+// ---------------------------------------------------------------------------
+
+async function refuseRun(requestId: string, reason: string, reasoning?: string): Promise<void> {
+  const store = getStore();
+  await logAudit(store, { request_id: requestId, node: "refuse", actor: "agent", status: "success", detail: reason });
+  await store.updateRunStatus(requestId, "refused", new Date().toISOString());
+  const run = await store.getRun(requestId);
+  const reportMd = await runReport({
+    run: run!,
+    auditEvents: await store.listAuditEvents(requestId),
+    refusalReason: reasoning ? `${reason}\n\n${reasoning}` : reason,
+  });
+  await logAudit(store, { request_id: requestId, node: "report", actor: "agent", status: "success", detail: "refusal report generated", output: reportMd });
+  broadcastEvent("run_finished", requestId, "report", { status: "refused", report: reportMd });
+}
+
+async function doRollback(
+  requestId: string,
+  payload: IaCPayload,
+  operation: "create" | "modify" | "destroy",
+  reason: string,
+  verifyReport?: Awaited<ReturnType<typeof runVerify>>
+): Promise<void> {
+  const store = getStore();
+  const projectName = projectNameFor(requestId);
+  const deploymentDir = deploymentDirFor(requestId);
+
+  broadcastEvent("node_started", requestId, "rollback");
+  const rb = await runRollback({
+    payload,
+    deploymentDir,
+    projectName,
+    operation,
+    onLog: (line) => broadcastEvent("log_line", requestId, "rollback", line),
+  });
+  await logAudit(store, {
+    request_id: requestId,
+    node: "rollback",
+    actor: "agent",
+    status: rb.ok ? "success" : "failure",
+    detail: rb.detail,
+    command_executed: rb.commandExecuted,
+    output: { stdout: rb.stdout.slice(-4000) },
+  });
+  broadcastEvent("node_finished", requestId, "rollback", { ok: rb.ok, detail: rb.detail });
+
+  const finalStatus = operation === "modify" && rb.ok ? "failed" : "rolled_back";
+  await store.updateRunStatus(requestId, finalStatus, new Date().toISOString());
+
+  const run = await store.getRun(requestId);
+  const reportMd = await runReport({
+    run: run!,
+    verifyReport: verifyReport ? { ...verifyReport, rolled_back: true } : undefined,
+    auditEvents: await store.listAuditEvents(requestId),
+    refusalReason: `${reason}. ${rb.detail}`,
+  });
+  await logAudit(store, { request_id: requestId, node: "report", actor: "agent", status: "success", detail: "failure report generated", output: reportMd });
+  broadcastEvent("run_finished", requestId, "report", { status: finalStatus, report: reportMd, rollback: rb });
+}
+
+// ---------------------------------------------------------------------------
+// Approval timeout (04-approval-gate.md: 30 min no-decision -> auto-reject)
+// ---------------------------------------------------------------------------
+
+export function scheduleApprovalTimeout(requestId: string, sinceIso?: string): void {
+  const since = sinceIso ? new Date(sinceIso).getTime() : Date.now();
+  const remainingMs = env.APPROVAL_TIMEOUT_MINUTES * 60_000 - (Date.now() - since);
+
+  const fire = async () => {
+    timeoutHandles.delete(requestId);
+    const store = getStore();
+    const run = await store.getRun(requestId);
+    if (run?.status !== "awaiting_approval") return;
+    await store.writeDecision({
+      request_id: requestId,
+      action: "reject",
+      comment: "auto-expired: no decision within timeout",
+      actor: "system",
+      ts: new Date().toISOString(),
+    });
+    await logAudit(store, {
+      request_id: requestId,
+      node: "approval_gate",
+      actor: "agent",
+      status: "failure",
+      detail: `auto-expired after ${env.APPROVAL_TIMEOUT_MINUTES} min with no decision — treated as rejected, nothing dangling`,
+    });
+    await refuseRun(requestId, "approval timed out with no human decision");
+  };
+
+  const handle = setTimeout(fire, Math.max(0, remainingMs));
+  timeoutHandles.set(requestId, handle);
+}
+
+export function clearApprovalTimeout(requestId: string): void {
+  const handle = timeoutHandles.get(requestId);
+  if (handle) {
+    clearTimeout(handle);
+    timeoutHandles.delete(requestId);
+  }
+}
+
+/** Called once at server boot so a restart doesn't lose in-flight approval timeouts (the approval state itself is already durable — this only re-arms the clock). */
+export async function rehydratePendingApprovals(): Promise<void> {
+  const store = getStore();
+  const runs = await store.listRuns();
+  for (const run of runs) {
+    if (run.status !== "awaiting_approval") continue;
+    const events = await store.listAuditEvents(run.request_id);
+    const gateEvent = [...events].reverse().find((e) => e.node === "approval_gate" && e.status === "pending");
+    scheduleApprovalTimeout(run.request_id, gateEvent?.ts);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: intake -> planner -> iac_generator -> approval gate
+// ---------------------------------------------------------------------------
+
+async function reachApprovalGate(
+  requestId: string,
+  planRequest: PlanRequest,
+  plan: CapacityPlan,
+  existing: { envId: string; capacityPlan: CapacityPlan; files: IaCPayload["files"] } | null
+): Promise<void> {
+  const store = getStore();
+  broadcastEvent("node_started", requestId, "iac_generator");
+  const iacResult = await runIacGenerator({
+    requestId,
+    projectName: projectNameFor(requestId),
+    plan,
+    isModify: planRequest.operation === "modify",
+    diffFrom: existing?.files ?? null,
+    deploymentDir: deploymentDirFor(requestId),
+  });
+
+  if (!iacResult.ok) {
+    await logAudit(store, {
+      request_id: requestId,
+      node: "iac_generator",
+      actor: "agent",
+      status: "failure",
+      detail: `no_template: ${iacResult.needed}`,
+      input: plan,
+    });
+    await refuseRun(requestId, `no template in the catalogue covers this topology: ${iacResult.needed}`);
+    return;
+  }
+
+  await logAudit(store, {
+    request_id: requestId,
+    node: "iac_generator",
+    actor: "agent",
+    status: "success",
+    detail: iacResult.mocked ? "mocked" : "ok",
+    input: plan,
+    output: iacResult.value,
+  });
+  broadcastEvent("node_finished", requestId, "iac_generator", iacResult.value);
+
+  await store.updateRunStatus(requestId, "awaiting_approval");
+  await logAudit(store, {
+    request_id: requestId,
+    node: "approval_gate",
+    actor: "agent",
+    status: "pending",
+    detail: "awaiting human decision",
+  });
+  broadcastEvent("awaiting_approval", requestId, "approval_gate", { plan, iac: iacResult.value });
+  scheduleApprovalTimeout(requestId);
+}
+
+async function runIntakeThroughGate(requestId: string, rawText: string, existingEnvId: string | null): Promise<void> {
+  const store = getStore();
+
+  broadcastEvent("node_started", requestId, "intake");
+  const intakeResult = await runIntake(requestId, rawText, existingEnvId);
+  await logAudit(store, {
+    request_id: requestId,
+    node: "intake",
+    actor: "agent",
+    status: "success",
+    detail: intakeResult.mocked ? "mocked" : "ok",
+    input: rawText,
+    output: intakeResult.value,
+  });
+  broadcastEvent("node_finished", requestId, "intake", intakeResult.value);
+
+  if (!intakeResult.value.feasible_input) {
+    await refuseRun(requestId, intakeResult.value.infeasibility_reason ?? "request rejected at intake");
+    return;
+  }
+  const planRequest = intakeResult.value;
+
+  let existing: { envId: string; capacityPlan: CapacityPlan; files: IaCPayload["files"] } | null = null;
+  if (planRequest.operation === "modify") {
+    existing = await resolveExistingEnv(store, planRequest);
+    if (!existing) {
+      await refuseRun(requestId, "operation=modify requested but no existing environment was found to modify");
+      return;
+    }
+  }
+
+  broadcastEvent("node_started", requestId, "planner");
+  const plannerResult = await runPlanner(planRequest, existing?.capacityPlan ?? null);
+  await logAudit(store, {
+    request_id: requestId,
+    node: "planner",
+    actor: "agent",
+    status: "success",
+    detail: plannerResult.mocked ? "mocked" : "ok",
+    input: planRequest,
+    output: plannerResult.value,
+  });
+  broadcastEvent("node_finished", requestId, "planner", plannerResult.value);
+
+  if (!plannerResult.value.feasible) {
+    await refuseRun(requestId, plannerResult.value.infeasibility_reason ?? "plan infeasible", plannerResult.value.reasoning);
+    return;
+  }
+
+  await reachApprovalGate(requestId, planRequest, plannerResult.value, existing);
+}
+
+export async function startRun(rawText: string, existingEnvId: string | null): Promise<string> {
+  const store = getStore();
+  const requestId = generateRequestId();
+  await store.createRun({
+    request_id: requestId,
+    raw_text: rawText,
+    operation: guessOperation(rawText),
+    status: "running",
+    created_at: new Date().toISOString(),
+    finished_at: null,
+  });
+
+  runIntakeThroughGate(requestId, rawText, existingEnvId).catch(async (err) => {
+    console.error(`[pipeline] intake phase failed for ${requestId}:`, err);
+    await store.updateRunStatus(requestId, "failed", new Date().toISOString()).catch(() => {});
+    broadcastEvent("run_finished", requestId, undefined, { status: "failed", error: String(err) });
+  });
+
+  return requestId;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: human decision -> rework (reject/edit) or deploy->verify->report (approve)
+// ---------------------------------------------------------------------------
+
+function applyCapacityPlanPatch(plan: CapacityPlan, patch: Record<string, unknown>): CapacityPlan {
+  const patchServices = patch.services as
+    | Array<{ name: string; replicas?: number; memory?: string; cpu?: string }>
+    | undefined;
+  if (!patchServices?.length) return plan;
+  const services = plan.services.map((s) => {
+    const p = patchServices.find((x) => x.name === s.name);
+    return p ? { ...s, replicas: p.replicas ?? s.replicas, memory: p.memory ?? s.memory, cpu: p.cpu ?? s.cpu } : s;
+  });
+  return { ...plan, services };
+}
+
+async function reworkPlan(
+  requestId: string,
+  action: DecisionAction,
+  comment: string | null,
+  capacityPlanPatch?: Record<string, unknown>
+): Promise<void> {
+  const store = getStore();
+  const planRequest = await loadLatestNodeOutput<PlanRequest>(store, requestId, "intake");
+  if (!planRequest) {
+    await refuseRun(requestId, "internal error: lost PlanRequest state during rework");
+    return;
+  }
+
+  let existing: { envId: string; capacityPlan: CapacityPlan; files: IaCPayload["files"] } | null = null;
+  if (planRequest.operation === "modify") existing = await resolveExistingEnv(store, planRequest);
+
+  let plan: CapacityPlan;
+  if (action === "edit") {
+    const previousPlan = await loadLatestNodeOutput<CapacityPlan>(store, requestId, "planner");
+    if (!previousPlan) {
+      await refuseRun(requestId, "internal error: lost CapacityPlan state during edit");
+      return;
+    }
+    plan = applyCapacityPlanPatch(previousPlan, capacityPlanPatch ?? {});
+    await logAudit(store, {
+      request_id: requestId,
+      node: "planner",
+      actor: "human",
+      status: "success",
+      detail: "human edit applied directly to capacity plan (replicas/memory/cpu)",
+      output: plan,
+    });
+    broadcastEvent("node_finished", requestId, "planner", plan);
+  } else {
+    broadcastEvent("node_started", requestId, "planner");
+    const plannerResult = await runPlanner(planRequest, existing?.capacityPlan ?? null, comment ?? undefined);
+    await logAudit(store, {
+      request_id: requestId,
+      node: "planner",
+      actor: "agent",
+      status: "success",
+      detail: `rework after rejection${comment ? `: ${comment}` : ""}`,
+      input: planRequest,
+      output: plannerResult.value,
+    });
+    broadcastEvent("node_finished", requestId, "planner", plannerResult.value);
+    if (!plannerResult.value.feasible) {
+      await refuseRun(requestId, plannerResult.value.infeasibility_reason ?? "plan infeasible", plannerResult.value.reasoning);
+      return;
+    }
+    plan = plannerResult.value;
+  }
+
+  await reachApprovalGate(requestId, planRequest, plan, existing);
+}
+
+async function runDeployThroughReport(requestId: string): Promise<void> {
+  const store = getStore();
+  const planRequest = await loadLatestNodeOutput<PlanRequest>(store, requestId, "intake");
+  const plan = await loadLatestNodeOutput<CapacityPlan>(store, requestId, "planner");
+  const payload = await loadLatestNodeOutput<IaCPayload>(store, requestId, "iac_generator");
+  if (!planRequest || !plan || !payload) {
+    await refuseRun(requestId, "internal error: lost pipeline state before deploy");
+    return;
+  }
+
+  const deploymentDir = deploymentDirFor(requestId);
+
+  broadcastEvent("node_started", requestId, "deploy");
+  const deployOutcome = await runDeploy({
+    payload,
+    deploymentDir,
+    onLog: (line) => broadcastEvent("log_line", requestId, "deploy", line),
+  });
+  await logAudit(store, {
+    request_id: requestId,
+    node: "deploy",
+    actor: "agent",
+    status: deployOutcome.deployOk ? "success" : "failure",
+    detail: deployOutcome.detail,
+    command_executed: payload.apply_command,
+    output: { stdout: deployOutcome.stdout.slice(-4000) },
+  });
+  broadcastEvent("node_finished", requestId, "deploy", { ok: deployOutcome.deployOk, detail: deployOutcome.detail });
+
+  if (!deployOutcome.deployOk) {
+    await doRollback(requestId, payload, planRequest.operation, "deploy failed");
+    return;
+  }
+
+  const endpoints = plan.network.expose.map((e) => `http://localhost:${e.host_port}`);
+
+  broadcastEvent("node_started", requestId, "verify");
+  const verifyReport = await runVerify({
+    requestId,
+    endpoints,
+    healthPath: "/",
+    targetRps: planRequest.expected_load.rps,
+    onLog: (line) => broadcastEvent("log_line", requestId, "verify", line),
+  });
+  await logAudit(store, {
+    request_id: requestId,
+    node: "verify",
+    actor: "agent",
+    status: verifyReport.verdict === "green" ? "success" : "failure",
+    detail: verifyReport.summary,
+    output: verifyReport,
+  });
+  broadcastEvent("node_finished", requestId, "verify", verifyReport);
+
+  if (verifyReport.verdict === "red") {
+    await doRollback(requestId, payload, planRequest.operation, "verify red", verifyReport);
+    return;
+  }
+
+  const envId = planRequest.operation === "modify" && planRequest.existing_env_id ? planRequest.existing_env_id : envIdFor(requestId);
+  const { files_json, endpoints_json } = encodeSnapshot(
+    { template_id: payload.template_id, capacity_plan: plan, files: payload.files },
+    endpoints
+  );
+  await store.upsertEnvironment({
+    env_id: envId,
+    request_id: requestId,
+    name: envId,
+    target: planRequest.constraints.target,
+    files_json,
+    endpoints_json,
+    state: "up",
+  });
+
+  await store.updateRunStatus(requestId, "deployed", new Date().toISOString());
+  const run = await store.getRun(requestId);
+  const reportMd = await runReport({
+    run: run!,
+    planRequest,
+    capacityPlan: plan,
+    verifyReport,
+    auditEvents: await store.listAuditEvents(requestId),
+  });
+  await logAudit(store, { request_id: requestId, node: "report", actor: "agent", status: "success", detail: "deployment report generated", output: reportMd });
+  broadcastEvent("run_finished", requestId, "report", { status: "deployed", report: reportMd, verify: verifyReport, endpoints });
+}
+
+export async function submitDecision(
+  requestId: string,
+  action: DecisionAction,
+  comment: string | null,
+  actor: string,
+  capacityPlanPatch?: Record<string, unknown>
+): Promise<void> {
+  const store = getStore();
+  const run = await store.getRun(requestId);
+  if (!run) throw new HttpError(404, "run not found");
+  if (run.status !== "awaiting_approval") {
+    throw new HttpError(409, `run is not awaiting approval (status=${run.status})`);
+  }
+
+  clearApprovalTimeout(requestId);
+  await store.writeDecision({ request_id: requestId, action, comment, actor, ts: new Date().toISOString() });
+  await logAudit(store, {
+    request_id: requestId,
+    node: "approval_gate",
+    actor: "human",
+    status: "success",
+    detail: `${action}${comment ? `: ${comment}` : ""}`,
+  });
+  broadcastEvent("node_finished", requestId, "approval_gate", { action, comment });
+
+  if (action === "approve") {
+    runDeployThroughReport(requestId).catch(async (err) => {
+      console.error(`[pipeline] deploy phase failed for ${requestId}:`, err);
+      await store.updateRunStatus(requestId, "failed", new Date().toISOString()).catch(() => {});
+      broadcastEvent("run_finished", requestId, undefined, { status: "failed", error: String(err) });
+    });
+    return;
+  }
+
+  await store.updateRunStatus(requestId, "running");
+  reworkPlan(requestId, action, comment, capacityPlanPatch).catch(async (err) => {
+    console.error(`[pipeline] rework failed for ${requestId}:`, err);
+    await store.updateRunStatus(requestId, "failed", new Date().toISOString()).catch(() => {});
+    broadcastEvent("run_finished", requestId, undefined, { status: "failed", error: String(err) });
+  });
+}
