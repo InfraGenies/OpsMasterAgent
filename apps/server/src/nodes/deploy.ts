@@ -1,5 +1,6 @@
 import type { IaCPayload } from "@ops-master/shared";
 import { resolveAllowedCommand, runAllowedCommand } from "./commandAllowList.js";
+import { shouldMockDeploy } from "./dockerProbe.js";
 
 export interface DeployInput {
   payload: IaCPayload;
@@ -25,6 +26,19 @@ export async function runDeploy(input: DeployInput): Promise<DeployOutcome> {
       deployOk: false,
       detail: `refused: apply_command is not in the allow-list ("${input.payload.apply_command}")`,
       stdout: "",
+    };
+  }
+
+  if (await shouldMockDeploy()) {
+    // Allow-list check above still ran — mock mode never skips the safety
+    // gate, only the process spawn.
+    input.onLog(`[mock deploy] docker CLI unavailable — simulating: ${input.payload.apply_command}`);
+    for (const f of input.payload.files) input.onLog(`[mock deploy] would apply ${f.path}`);
+    input.onLog("[mock deploy] all services report healthy (simulated)");
+    return {
+      deployOk: true,
+      detail: "SIMULATED deploy (mock deploy mode — docker CLI not present on this machine)",
+      stdout: "[mock deploy] simulated success",
     };
   }
 

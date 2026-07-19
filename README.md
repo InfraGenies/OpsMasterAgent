@@ -33,7 +33,7 @@ npm start
 Or double-click / run `.\start-app.ps1` directly. This one command: checks Node.js is installed (18+),
 warns (non-fatally) if Docker isn't, runs `npm install` if `node_modules` is missing, builds
 `@ops-master/shared`, creates a working `apps/server/.env` in mock mode if none exists yet, then starts
-both the server (`:4000`) and web UI (`:5173`) in the background and opens your browser once the server
+both the server (`:4100`) and web UI (`:5173`) in the background and opens your browser once the server
 reports healthy. **No API keys or Supabase project required to get a running app** — everything works in
 mock/local-store mode out of the box; fill in real keys in `apps/server/.env` whenever you're ready (see
 below), no need to re-run the script.
@@ -44,7 +44,7 @@ npm stop
 
 Or `.\stop-app.ps1` — stops both processes (and their child processes; `npm`/`tsx`/`vite` fan out into
 several node processes on Windows, so this kills the whole tree via `taskkill /T`, not just the top PID),
-and as a fallback frees ports 4000/5173 if anything's still bound to them. Safe to run `npm start` again
+and as a fallback frees ports 4100/5173 if anything's still bound to them. Safe to run `npm start` again
 any time — it stops any previous instance first. Logs land in `.run/server.log` and `.run/web.log`.
 
 ### Manual setup (any OS)
@@ -73,7 +73,7 @@ from a browser).
 
 ```bash
 # terminal 1
-npm run dev:server     # http://localhost:4000
+npm run dev:server     # http://localhost:4100
 
 # terminal 2
 npm run dev:web         # http://localhost:5173

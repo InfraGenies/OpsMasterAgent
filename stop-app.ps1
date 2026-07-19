@@ -3,7 +3,7 @@
   Stops the server/web processes started by start-app.ps1 (by PID file,
   killing each process's full tree since npm/tsx/vite fan out into child
   node processes on Windows), then falls back to freeing this app's own
-  dev ports (4000, 5173) if anything is still listening on them.
+  dev ports (4100, 5173) if anything is still listening on them.
 #>
 param(
   [switch]$Quiet
@@ -38,8 +38,8 @@ Stop-Tracked "server"
 Stop-Tracked "web"
 
 # Fallback: free this app's own dev ports if something is still bound to
-# them (e.g. started outside this script). Scoped to 4000/5173 only.
-foreach ($port in 4000, 5173) {
+# them (e.g. started outside this script). Scoped to 4100/5173 only.
+foreach ($port in 4100, 5173) {
   $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
   foreach ($c in $conns) {
     Say "Port $port still in use by pid $($c.OwningProcess) - stopping it too."

@@ -11,7 +11,7 @@ function bool(v: string | undefined, fallback: boolean): boolean {
 }
 
 export const env = {
-  PORT: Number(process.env.PORT ?? 4000),
+  PORT: Number(process.env.PORT ?? 4100),
 
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
   ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-5",
@@ -23,6 +23,12 @@ export const env = {
 
   DEPLOY_TARGET: process.env.DEPLOY_TARGET ?? "compose",
   DEPLOYMENTS_DIR: path.resolve(SERVER_ROOT, process.env.DEPLOYMENTS_DIR ?? "./deployments"),
+
+  // "auto" (default): simulate deploy/verify only when the docker CLI is
+  // missing on this machine. "true"/"false" force one behavior.
+  MOCK_DEPLOY: (process.env.MOCK_DEPLOY ?? "auto").toLowerCase(),
+  // Skip the autocannon load test inside verify (health checks still run).
+  SKIP_LOAD_TEST: bool(process.env.SKIP_LOAD_TEST, false),
 
   APPROVAL_TIMEOUT_MINUTES: Number(process.env.APPROVAL_TIMEOUT_MINUTES ?? 30),
 

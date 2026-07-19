@@ -32,8 +32,8 @@ npm install                          # once, from repo root
 npm run build -w @ops-master/shared  # required once before first dev:server / dev:web
 
 # Dev (two terminals) — what start-app.ps1 does under the hood
-npm run dev:server                   # apps/server on :4000 (tsx watch)
-npm run dev:web                      # apps/web on :5173 (vite, proxies /api and /ws to :4000)
+npm run dev:server                   # apps/server on :4100 (tsx watch)
+npm run dev:web                      # apps/web on :5173 (vite, proxies /api and /ws to :4100)
 
 # Build / typecheck everything
 npm run build                        # builds shared -> server -> web in order (order matters: shared first)

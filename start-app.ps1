@@ -2,7 +2,7 @@
 <#
   Ops Master Agent - one-command dev startup.
   Checks/installs project dependencies, ensures a working local .env exists,
-  then starts the server (:4000) and web UI (:5173) in the background.
+  then starts the server (:4100) and web UI (:5173) in the background.
   Run .\stop-app.ps1 to stop them. Safe to re-run - stops any previous
   instance first.
 #>
@@ -83,8 +83,10 @@ if (-not (Test-Path $envPath)) {
     "",
     "DEPLOY_TARGET=compose",
     "DEPLOYMENTS_DIR=./deployments",
+    "MOCK_DEPLOY=auto",
+    "SKIP_LOAD_TEST=true",
     "",
-    "PORT=4000",
+    "PORT=4100",
     "APPROVAL_TIMEOUT_MINUTES=30"
   )
   Set-Content -Path $envPath -Value $envLines -Encoding utf8
@@ -100,7 +102,7 @@ $runDir = "$root\.run"
 New-Item -ItemType Directory -Force -Path $runDir | Out-Null
 & "$root\stop-app.ps1" -Quiet
 
-Step "Starting server (http://localhost:4000)..."
+Step "Starting server (http://localhost:4100)..."
 $serverProc = Start-Process -FilePath "cmd.exe" `
   -ArgumentList "/c npm run dev -w @ops-master/server" `
   -WorkingDirectory $root -WindowStyle Hidden -PassThru `
@@ -122,7 +124,7 @@ $healthy = $false
 for ($i = 0; $i -lt 40; $i++) {
   Start-Sleep -Milliseconds 500
   try {
-    $resp = Invoke-RestMethod -Uri "http://localhost:4000/api/health" -TimeoutSec 2
+    $resp = Invoke-RestMethod -Uri "http://localhost:4100/api/health" -TimeoutSec 2
     if ($resp.ok) { $healthy = $true; break }
   } catch {}
 }
@@ -134,7 +136,7 @@ if ($healthy) {
   Warn "server did not report healthy within 20s - check .run\server.log and .run\server.err.log"
 }
 Write-Host "  Web UI:  http://localhost:5173" -ForegroundColor White
-Write-Host "  Server:  http://localhost:4000/api/health" -ForegroundColor White
+Write-Host "  Server:  http://localhost:4100/api/health" -ForegroundColor White
 Write-Host "  Logs:    .run\server.log / .run\web.log"
 Write-Host "  Stop:    .\stop-app.ps1"
 Write-Host ""

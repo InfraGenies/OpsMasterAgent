@@ -69,6 +69,7 @@ async function main() {
   }
 
   console.log("\nsmoke test complete.");
+  process.exit(0);
 }
 
 main().catch((err) => {

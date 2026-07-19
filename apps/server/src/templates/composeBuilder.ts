@@ -24,7 +24,20 @@ export interface ComposeDoc {
   volumes?: Record<string, null>;
 }
 
+/**
+ * CapacityPlan carries k8s-style memory units ("512Mi", "1Gi") per the spec,
+ * but docker compose only accepts b/k/m/g suffixes ("512M", "1G") and rejects
+ * the "-i" forms at `config`/`up` time — normalize at the single dump point.
+ */
+function composeMemory(mem: string): string {
+  return mem.replace(/([KMGT])i$/i, "$1");
+}
+
 export function dumpCompose(doc: ComposeDoc): string {
+  for (const svc of Object.values(doc.services)) {
+    const limits = svc.deploy?.resources?.limits;
+    if (limits?.memory) limits.memory = composeMemory(limits.memory);
+  }
   return yaml.dump(doc, { noRefs: true, lineWidth: 120 });
 }
 

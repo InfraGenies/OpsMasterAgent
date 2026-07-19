@@ -1,5 +1,7 @@
 import autocannon from "autocannon";
 import type { CheckResult, SmokeTest, VerifyReport } from "@ops-master/shared";
+import { env } from "../config.js";
+import { shouldMockDeploy } from "./dockerProbe.js";
 
 export interface VerifyInput {
   requestId: string;
@@ -65,6 +67,24 @@ async function runSmokeTest(url: string, targetRps: number, onLog: (l: string) =
 
 /** Deterministic verdict per 06-verify-agent.md: no LLM in the pass/fail decision. */
 export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
+  if (await shouldMockDeploy()) {
+    // Nothing was really deployed, so probing real endpoints would be
+    // meaningless — report clearly-labeled simulated checks instead.
+    const checks: CheckResult[] = input.endpoints.map((e) => {
+      input.onLog(`[mock verify] simulated health check GET ${joinUrl(e, input.healthPath)} -> 200`);
+      return { name: `GET ${joinUrl(e, input.healthPath)} (SIMULATED)`, status: "pass" as const, latency_ms: 1 };
+    });
+    return {
+      request_id: input.requestId,
+      checks,
+      smoke_test: null,
+      verdict: "green",
+      rolled_back: false,
+      endpoints: input.endpoints,
+      summary: `SIMULATED verification (mock deploy mode — docker CLI not present): ${checks.length} health check(s) assumed passing; load test skipped.`,
+    };
+  }
+
   const checks: CheckResult[] = [];
   for (const endpoint of input.endpoints) {
     checks.push(await checkHealth(joinUrl(endpoint, input.healthPath), input.onLog));
@@ -74,7 +94,9 @@ export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
   let smokeTest: SmokeTest | null = null;
   let smokeOk = true;
 
-  if (allChecksPass && input.endpoints.length > 0 && input.targetRps) {
+  if (env.SKIP_LOAD_TEST) {
+    input.onLog("load test skipped (SKIP_LOAD_TEST=true) — verdict based on health checks only");
+  } else if (allChecksPass && input.endpoints.length > 0 && input.targetRps) {
     smokeTest = await runSmokeTest(joinUrl(input.endpoints[0], input.healthPath), input.targetRps, input.onLog);
     smokeOk = smokeTest.p95_ms < 300 && smokeTest.error_rate < 0.01;
   }

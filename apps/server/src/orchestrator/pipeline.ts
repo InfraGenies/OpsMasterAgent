@@ -143,6 +143,10 @@ export function scheduleApprovalTimeout(requestId: string, sinceIso?: string): v
   };
 
   const handle = setTimeout(fire, Math.max(0, remainingMs));
+  // unref: an armed approval timer must never be the only thing keeping the
+  // process alive (the smoke test would otherwise hang ~30 min after
+  // finishing; the real server is kept alive by its HTTP listener anyway).
+  handle.unref?.();
   timeoutHandles.set(requestId, handle);
 }
 

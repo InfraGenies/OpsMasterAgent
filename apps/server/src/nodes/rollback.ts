@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { IaCPayload, Operation } from "@ops-master/shared";
 import { resolveAllowedCommand, runAllowedCommand } from "./commandAllowList.js";
+import { shouldMockDeploy } from "./dockerProbe.js";
 
 export interface RollbackInput {
   payload: IaCPayload;
@@ -37,6 +38,15 @@ export async function runRollback(input: RollbackInput): Promise<RollbackOutcome
     if (!argv) {
       return { ok: false, detail: "internal error: restore command failed allow-list check", stdout: "", commandExecuted: restoreCommand };
     }
+    if (await shouldMockDeploy()) {
+      input.onLog(`[mock rollback] simulating restore: ${restoreCommand}`);
+      return {
+        ok: true,
+        detail: "SIMULATED restore of previous environment files (mock deploy mode)",
+        stdout: "[mock rollback] simulated success",
+        commandExecuted: restoreCommand,
+      };
+    }
     const result = await runAllowedCommand("docker", argv, input.deploymentDir, input.onLog);
     return {
       ok: result.ok,
@@ -54,6 +64,15 @@ export async function runRollback(input: RollbackInput): Promise<RollbackOutcome
       ok: false,
       detail: `refused: rollback_command is not in the allow-list ("${input.payload.rollback_command}")`,
       stdout: "",
+      commandExecuted: input.payload.rollback_command,
+    };
+  }
+  if (await shouldMockDeploy()) {
+    input.onLog(`[mock rollback] simulating teardown: ${input.payload.rollback_command}`);
+    return {
+      ok: true,
+      detail: "SIMULATED teardown (mock deploy mode)",
+      stdout: "[mock rollback] simulated success",
       commandExecuted: input.payload.rollback_command,
     };
   }
