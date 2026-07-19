@@ -1,13 +1,27 @@
 import type { Run } from "@ops-master/shared";
 
-const STATUS_COLOR: Record<Run["status"], string> = {
-  running: "text-blue-400",
-  awaiting_approval: "text-amber-400",
-  deployed: "text-emerald-400",
-  failed: "text-red-400",
-  rolled_back: "text-orange-400",
-  refused: "text-slate-500",
+const STATUS_STYLE: Record<Run["status"], { badge: string; dot: string; label: string }> = {
+  running: { badge: "border-sky-800 bg-sky-950/60 text-sky-300", dot: "bg-sky-400 animate-pulse", label: "running" },
+  awaiting_approval: {
+    badge: "border-amber-700 bg-amber-950/60 text-amber-300",
+    dot: "bg-amber-400 animate-pulse",
+    label: "needs approval",
+  },
+  deployed: { badge: "border-emerald-800 bg-emerald-950/60 text-emerald-300", dot: "bg-emerald-400", label: "deployed" },
+  failed: { badge: "border-rose-800 bg-rose-950/60 text-rose-300", dot: "bg-rose-400", label: "failed" },
+  rolled_back: { badge: "border-orange-800 bg-orange-950/60 text-orange-300", dot: "bg-orange-400", label: "rolled back" },
+  refused: { badge: "border-slate-700 bg-slate-900 text-slate-400", dot: "bg-slate-500", label: "refused" },
 };
+
+export function StatusBadge({ status }: { status: Run["status"] }) {
+  const s = STATUS_STYLE[status];
+  return (
+    <span className={`status-badge ${s.badge}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
+      {s.label}
+    </span>
+  );
+}
 
 export function RunList({
   runs,
@@ -22,19 +36,21 @@ export function RunList({
     return <p className="text-xs text-slate-500 px-2">No runs yet — submit a request above.</p>;
   }
   return (
-    <ul className="space-y-1">
+    <ul className="space-y-1.5">
       {runs.map((run) => (
         <li key={run.request_id}>
           <button
             onClick={() => onSelect(run.request_id)}
-            className={`w-full text-left px-2 py-2 rounded-md text-xs border ${
-              selectedId === run.request_id ? "border-indigo-600 bg-slate-900" : "border-transparent hover:bg-slate-900"
+            className={`w-full text-left px-3 py-2.5 rounded-lg text-xs border transition-colors duration-150 ${
+              selectedId === run.request_id
+                ? "border-indigo-500/70 bg-indigo-950/30 shadow-md shadow-indigo-950/30"
+                : "border-slate-800/60 bg-slate-900/40 hover:bg-slate-800/60 hover:border-slate-700"
             }`}
           >
-            <div className="truncate text-slate-200">{run.raw_text}</div>
-            <div className="flex justify-between mt-0.5">
-              <span className="text-slate-500">{run.request_id}</span>
-              <span className={STATUS_COLOR[run.status]}>{run.status}</span>
+            <div className="truncate text-slate-200 font-medium">{run.raw_text}</div>
+            <div className="flex items-center justify-between mt-1.5 gap-2">
+              <span className="text-slate-500 font-mono text-[10px] truncate">{run.request_id}</span>
+              <StatusBadge status={run.status} />
             </div>
           </button>
         </li>

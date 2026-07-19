@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import type { AuditEvent, NodeName } from "@ops-master/shared";
 
 const STEPS: { key: NodeName; label: string }[] = [
@@ -21,10 +22,17 @@ function statusFor(events: AuditEvent[], node: NodeName): Status {
 }
 
 const STYLES: Record<Status, string> = {
-  idle: "bg-slate-800 text-slate-500 border-slate-700",
-  pending: "bg-amber-950 text-amber-300 border-amber-700 animate-pulse",
-  success: "bg-emerald-950 text-emerald-300 border-emerald-700",
-  failure: "bg-red-950 text-red-300 border-red-700",
+  idle: "bg-slate-900/60 text-slate-600 border-slate-800",
+  pending: "bg-amber-950/80 text-amber-300 border-amber-600/70 animate-pulse shadow-md shadow-amber-950/40",
+  success: "bg-emerald-950/80 text-emerald-300 border-emerald-700/70",
+  failure: "bg-rose-950/80 text-rose-300 border-rose-700/70",
+};
+
+const ICONS: Record<Status, string> = {
+  idle: "○",
+  pending: "◔",
+  success: "✓",
+  failure: "✕",
 };
 
 export function PipelineStepper({ events }: { events: AuditEvent[] }) {
@@ -33,17 +41,20 @@ export function PipelineStepper({ events }: { events: AuditEvent[] }) {
   const steps = STEPS.filter((s) => (s.key === "rollback" ? hasRollback : s.key === "refuse" ? hasRefuse : true));
 
   return (
-    <div className="flex flex-wrap gap-2">
-      {steps.map((step) => {
+    <div className="flex flex-wrap items-center gap-y-2">
+      {steps.map((step, i) => {
         const status = statusFor(events, step.key);
         return (
-          <div
-            key={step.key}
-            className={`px-3 py-1.5 rounded-full border text-xs font-medium ${STYLES[status]}`}
-            title={status}
-          >
-            {step.label}
-          </div>
+          <Fragment key={step.key}>
+            {i > 0 && <span className="mx-1.5 text-slate-700 text-xs select-none">─</span>}
+            <div
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-colors duration-300 ${STYLES[status]}`}
+              title={status}
+            >
+              <span className="text-[10px]">{ICONS[status]}</span>
+              {step.label}
+            </div>
+          </Fragment>
         );
       })}
     </div>

@@ -177,3 +177,6 @@ After that, restart the app (`npm stop` then `npm start`) — deploys and health
 with zero config changes (`MOCK_DEPLOY=auto` detects the docker CLI).
 
 See [AGENTS.md](AGENTS.md) for how each agent works internally and every configuration option.
+For per-use-case inputs and coverage see [source_configuration/DEMO_PLAN.md](source_configuration/DEMO_PLAN.md),
+and for what must exist locally in each demo mode (repos? Docker? API key?) see
+[source_configuration/DEMO_MODES.md](source_configuration/DEMO_MODES.md).

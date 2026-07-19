@@ -62,6 +62,7 @@ const composeSingleV1: TemplateDefinition = {
     const hostPort = hostPortFor(plan, app.name, containerPort);
     const healthPath = typeof variables.health_path === "string" ? variables.health_path : "/";
     const front = frontIfScaled(app.name, containerPort, hostPort, app.replicas);
+    const appStorage = plan.storage.find((s) => s.attached_to === app.name);
 
     const doc: ComposeDoc = {
       services: {
@@ -69,11 +70,13 @@ const composeSingleV1: TemplateDefinition = {
           image: app.image,
           ports: front.appPorts,
           restart: "unless-stopped",
+          volumes: appStorage ? [`${appStorage.name}:/app/data`] : undefined,
           healthcheck: httpHealthcheck(containerPort, healthPath),
           deploy: { replicas: app.replicas, resources: { limits: { cpus: app.cpu, memory: app.memory } } },
         },
         ...front.extraServices,
       },
+      volumes: appStorage ? { [appStorage.name]: null } : undefined,
     };
 
     return {

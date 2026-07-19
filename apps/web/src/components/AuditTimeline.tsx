@@ -11,8 +11,8 @@ const STATUS_COLOR: Record<AuditEvent["status"], string> = {
 function EventRow({ event }: { event: AuditEvent }) {
   const [open, setOpen] = useState(false);
   return (
-    <li className="border-l-2 border-slate-800 pl-3 py-1.5">
-      <button className="w-full text-left" onClick={() => setOpen((v) => !v)}>
+    <li className="border-l-2 border-slate-800 hover:border-indigo-600/60 pl-3 py-1.5 transition-colors duration-150">
+      <button className="w-full text-left rounded-md hover:bg-slate-900/60 px-1.5 py-1 -mx-1.5 transition-colors duration-150" onClick={() => setOpen((v) => !v)}>
         <div className="flex items-center gap-2 text-xs">
           <span>{ACTOR_ICON[event.actor]}</span>
           <span className="font-medium text-slate-200">{event.node}</span>

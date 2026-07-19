@@ -45,8 +45,11 @@ function mockIntake(requestId: string, rawText: string): PlanRequest {
   const lower = rawText.toLowerCase();
   const policyViolation = POLICY_VIOLATION_PATTERNS.some((p) => p.test(rawText));
 
-  const rpsMatch = rawText.match(/(\d[\d,]*)\s*(?:req(?:uests)?\/?s|rps)/i);
+  const rpsMatch = rawText.match(/(\d[\d,]*)\s*(?:req(?:uests)?\/?s(?:econd)?|rps)/i);
   const rps = rpsMatch ? Number(rpsMatch[1].replace(/,/g, "")) : null;
+
+  const usersMatch = rawText.match(/(\d[\d,]*)\s*(?:concurrent\s+)?(?:users?|voters?)\b/i);
+  const concurrentUsers = usersMatch ? Number(usersMatch[1].replace(/,/g, "")) : null;
 
   const repoMatch = rawText.match(/https?:\/\/\S+/);
 
@@ -75,12 +78,17 @@ function mockIntake(requestId: string, rawText: string): PlanRequest {
     runtime,
     repo_url: repoMatch ? repoMatch[0] : null,
     dependencies,
-    expected_load: { rps, concurrent_users: null },
+    expected_load: { rps, concurrent_users: concurrentUsers },
     environment: lower.includes("staging") ? "staging" : lower.includes("qa") ? "qa" : "dev",
     operation,
     constraints: { target: "compose", max_memory_gb: 8 },
     existing_env_id: null,
-    notes: rps === null ? ["expected load not stated; assuming light traffic for sizing"] : [],
+    notes:
+      rps === null
+        ? concurrentUsers !== null
+          ? [`load stated as ~${concurrentUsers} concurrent users; planner will convert to rps`]
+          : ["expected load not stated; assuming light traffic for sizing"]
+        : [],
     feasible_input: !policyViolation && !wantsRealProdCloud,
     infeasibility_reason: policyViolation
       ? "policy violation"

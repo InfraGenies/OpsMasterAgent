@@ -1,10 +1,18 @@
 import { useState } from "react";
 
-const EXAMPLES = [
-  "Spin up a dev environment for a simple Node.js todo app, low traffic, single instance.",
-  "Create a staging environment for a Node.js application with PostgreSQL capable of handling 500 requests/second.",
-  "Add a Redis cache to the staging environment we just created and wire the app to it.",
-  "Provision production with 50,000 req/s and five-nines availability.",
+const EXAMPLES: { label: string; text: string }[] = [
+  { label: "Dev todo app", text: "Spin up a dev environment for a simple Node.js todo app, low traffic, single instance." },
+  {
+    label: "Staging @ 500 rps",
+    text: "Create a staging environment for a Node.js application with PostgreSQL capable of handling 500 requests/second.",
+  },
+  { label: "Add Redis (modify)", text: "Add a Redis cache to the staging environment we just created and wire the app to it." },
+  { label: "LB, 3 replicas", text: "I need a load-balanced Node.js web tier with Redis, 3 replicas behind Nginx, for performance testing." },
+  { label: "Refusal (50k rps)", text: "Provision production with 50,000 req/s and five-nines availability." },
+  {
+    label: "Rollback demo",
+    text: "Create a staging environment for a Node.js application with PostgreSQL, 100 requests/second, demo-fail: use the wrong db password.",
+  },
 ];
 
 export function ChatInput({ onSubmit, disabled }: { onSubmit: (text: string) => void; disabled: boolean }) {
@@ -17,9 +25,9 @@ export function ChatInput({ onSubmit, disabled }: { onSubmit: (text: string) => 
   }
 
   return (
-    <div className="border border-slate-800 rounded-lg p-3 bg-slate-900">
+    <div className="card p-3 space-y-2.5">
       <textarea
-        className="w-full bg-slate-950 border border-slate-800 rounded-md p-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        className="field w-full p-2.5 text-sm resize-none"
         rows={3}
         placeholder='Describe the infrastructure you need, e.g. "Create a staging environment for a Node.js application with PostgreSQL capable of handling 500 requests/second."'
         value={text}
@@ -28,27 +36,17 @@ export function ChatInput({ onSubmit, disabled }: { onSubmit: (text: string) => 
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
         }}
       />
-      <div className="flex items-center justify-between mt-2">
-        <div className="flex flex-wrap gap-1.5">
-          {EXAMPLES.map((ex) => (
-            <button
-              key={ex}
-              className="text-[11px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400"
-              onClick={() => setText(ex)}
-              type="button"
-            >
-              {ex.slice(0, 28)}…
-            </button>
-          ))}
-        </div>
-        <button
-          className="px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-sm font-medium"
-          onClick={submit}
-          disabled={disabled || !text.trim()}
-        >
-          Submit
-        </button>
+      <div className="flex flex-wrap gap-1.5">
+        {EXAMPLES.map((ex) => (
+          <button key={ex.label} className="chip" onClick={() => setText(ex.text)} type="button" title={ex.text}>
+            {ex.label}
+          </button>
+        ))}
       </div>
+      <button className="btn-primary w-full" onClick={submit} disabled={disabled || !text.trim()}>
+        {disabled ? "Submitting…" : "Submit request"}
+        <span className="text-indigo-200 text-xs font-normal">Ctrl+↵</span>
+      </button>
     </div>
   );
 }

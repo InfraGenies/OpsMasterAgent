@@ -415,6 +415,7 @@ async function runDeployThroughReport(requestId: string): Promise<void> {
     healthPath: "/",
     targetRps: planRequest.expected_load.rps,
     onLog: (line) => broadcastEvent("log_line", requestId, "verify", line),
+    forceFail: /\b(demo-fail|wrong (db )?password)\b/i.test(planRequest.raw_text),
   });
   await logAudit(store, {
     request_id: requestId,

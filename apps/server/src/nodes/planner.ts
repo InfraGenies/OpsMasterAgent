@@ -40,7 +40,11 @@ function ceilReplicas(rps: number, perInstance: number): number {
 const HARD_CAP_RPS = 2000;
 
 function mockPlanner(planRequest: PlanRequest): CapacityPlan {
-  const rps = planRequest.expected_load.rps ?? 50;
+  const rawLower = planRequest.raw_text.toLowerCase();
+  // "~200 concurrent users/voters" with no rps stated -> rough rule of thumb
+  // of 1 rps per 10 concurrent users (stated in reasoning when applied).
+  const users = planRequest.expected_load.concurrent_users;
+  const rps = planRequest.expected_load.rps ?? (users ? Math.max(10, Math.ceil(users / 10)) : 50);
 
   if (rps > HARD_CAP_RPS) {
     return {
@@ -77,16 +81,42 @@ function mockPlanner(planRequest: PlanRequest): CapacityPlan {
     runtimeNote = "static site";
   }
 
-  const replicas = ceilReplicas(rps, perInstance);
+  // UC-10: a well-known off-the-shelf tool named in the request wins over the
+  // generic runtime image (mirrors the prompt's "prefer a purpose-built image").
+  let appPort = 3000;
+  let appVolume = false;
+  if (/\b(monitoring|uptime|status page|dashboard)\b/.test(rawLower) && !planRequest.repo_url) {
+    image = "louislam/uptime-kuma:1";
+    appPort = 3001;
+    appVolume = true;
+    runtimeNote = "Uptime Kuma monitoring dashboard (single instance)";
+  }
+
+  let replicas = ceilReplicas(rps, perInstance);
   const reasons = [
     `${runtimeNote} at ~${perInstance} rps/instance sustained -> replicas = ceil(${rps}/${perInstance}) = ${replicas}.`,
   ];
+  if (planRequest.expected_load.rps === null && users) {
+    reasons.unshift(`~${users} concurrent users at ~1 rps per 10 users -> sizing for ~${rps} rps.`);
+  }
+
+  // UC-4: an explicit replica count in the request is an instruction, not a
+  // sizing input — honor it (capped at the sandbox max of 4).
+  const replicasHint = planRequest.raw_text.match(/(\d+)\s*replicas?\b/i);
+  if (replicasHint) {
+    replicas = Math.min(4, Math.max(1, Number(replicasHint[1])));
+    reasons.push(`Replica count ${replicas} set explicitly by the request (overrides load-based sizing).`);
+  }
 
   const services: CapacityPlan["services"] = [
-    { name: "app", image, cpu, memory, replicas, ports: [3000] },
+    { name: "app", image, cpu, memory, replicas, ports: [appPort] },
   ];
   const storage: CapacityPlan["storage"] = [];
-  const expose: CapacityPlan["network"]["expose"] = [{ service: "app", host_port: 3000 }];
+  if (appVolume) {
+    storage.push({ name: "appdata", type: "volume", size: "1Gi", attached_to: "app" });
+    reasons.push("Persistent 1Gi volume attached so monitor history survives restarts.");
+  }
+  const expose: CapacityPlan["network"]["expose"] = [{ service: "app", host_port: appPort }];
   const internal: string[] = [];
 
   if (planRequest.dependencies.includes("postgresql")) {

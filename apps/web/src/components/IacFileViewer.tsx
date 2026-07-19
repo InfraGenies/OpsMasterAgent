@@ -40,8 +40,10 @@ export function IacFileViewer({ files, diffFrom }: { files: IaCFile[]; diffFrom:
             <button
               key={f.path}
               onClick={() => setActive(idx)}
-              className={`text-xs px-2 py-1 rounded ${
-                idx === active ? "bg-indigo-600 text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+              className={`text-xs px-2.5 py-1 rounded-md font-mono transition-colors duration-150 border ${
+                idx === active
+                  ? "bg-indigo-600/90 border-indigo-500 text-white shadow-sm shadow-indigo-950/50"
+                  : "bg-slate-800/60 border-slate-700/60 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
               }`}
             >
               {f.path}
@@ -49,10 +51,7 @@ export function IacFileViewer({ files, diffFrom }: { files: IaCFile[]; diffFrom:
           ))}
         </div>
         {diffFrom && (
-          <button
-            onClick={() => setShowDiff((v) => !v)}
-            className="text-xs px-2 py-1 rounded bg-slate-800 text-slate-300 hover:bg-slate-700"
-          >
+          <button onClick={() => setShowDiff((v) => !v)} className="btn-ghost btn-sm">
             {showDiff ? "show full file" : "show diff"}
           </button>
         )}

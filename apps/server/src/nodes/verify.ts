@@ -10,6 +10,13 @@ export interface VerifyInput {
   healthPath: string;
   targetRps: number | null;
   onLog: (line: string) => void;
+  /**
+   * UC-8b rollback demo: when the original request contains a deliberate
+   * failure marker ("demo-fail" / "wrong db password"), mock-deploy mode
+   * simulates a red verification so the auto-rollback path can be shown
+   * offline. Real mode ignores this — a genuinely bad config fails naturally.
+   */
+  forceFail?: boolean;
 }
 
 function joinUrl(base: string, path: string): string {
@@ -68,6 +75,22 @@ async function runSmokeTest(url: string, targetRps: number, onLog: (l: string) =
 /** Deterministic verdict per 06-verify-agent.md: no LLM in the pass/fail decision. */
 export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
   if (await shouldMockDeploy()) {
+    if (input.forceFail) {
+      const checks: CheckResult[] = input.endpoints.map((e) => {
+        input.onLog(`[mock verify] simulated health check GET ${joinUrl(e, input.healthPath)} -> 500 (forced failure marker in request)`);
+        return { name: `GET ${joinUrl(e, input.healthPath)} (SIMULATED)`, status: "fail" as const, latency_ms: 0 };
+      });
+      return {
+        request_id: input.requestId,
+        checks,
+        smoke_test: null,
+        verdict: "red",
+        rolled_back: false,
+        endpoints: input.endpoints,
+        summary:
+          "SIMULATED verification FAILURE (request carried a deliberate failure marker — UC-8b rollback demo): app container cannot reach the database, health checks red.",
+      };
+    }
     // Nothing was really deployed, so probing real endpoints would be
     // meaningless — report clearly-labeled simulated checks instead.
     const checks: CheckResult[] = input.endpoints.map((e) => {
