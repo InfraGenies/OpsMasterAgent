@@ -40,6 +40,26 @@ All inter-agent messages are one of these four JSON objects. Pydantic models in 
 
 If `feasible=false`, orchestrator routes to refusal — planner must fill `infeasibility_reason` and suggest an alternative in `reasoning`.
 
+## 2b. ReadinessReport  (planner → readiness_check → iac_generator)
+
+Not in the original agent set — see `02b-readiness-check.md` for why and how this fits in.
+
+```json
+{
+  "request_id": "req-2026-0001",
+  "checks": [
+    { "name": "docker_daemon_reachable", "status": "pass", "detail": "docker daemon reachable", "blocking": true },
+    { "name": "host_ports_free", "status": "fail", "detail": "host port(s) already in use: 3000", "blocking": true }
+  ],
+  "ready": false,
+  "blockers": ["host port(s) already in use: 3000"]
+}
+```
+
+`status`: `pass | fail | skipped`. `ready` is true iff no `blocking: true` check has `status: "fail"` — a
+`skipped` check (couldn't determine, e.g. no docker CLI on this machine) never blocks. `blockers` is the
+`detail` of every failing, blocking check, surfaced verbatim in the refusal reason.
+
 ## 3. IaCPayload  (iac_generator → approval gate → deploy)
 
 ```json
@@ -58,6 +78,31 @@ If `feasible=false`, orchestrator routes to refusal — planner must fill `infea
 ```
 
 `format`: `compose | terraform | k8s`. `template_id` MUST reference a vetted template in `templates/` — the deploy agent refuses payloads with unknown template IDs. For `modify` operations, `diff_from` holds the previous env's files and the UI renders a diff.
+
+## 3b. PolicyReport  (iac_generator ⇄ policy_validator self-correction loop, then → approval gate)
+
+Not in the original agent set — see `03b-policy-validator.md` for why and how this fits in.
+
+```json
+{
+  "request_id": "req-2026-0001",
+  "findings": [
+    {
+      "rule_id": "weak_default_secret",
+      "severity": "high",
+      "message": "DB_PASSWORD in .env is set to a common default value (\"admin123\") instead of a generated secret",
+      "file": ".env",
+      "auto_fixable": true
+    }
+  ],
+  "passed": false,
+  "attempts": 1
+}
+```
+
+`severity`: `critical | high | medium | low`. `passed` is true iff no `critical`/`high` finding remains.
+Only findings with `auto_fixable: true` drive a retry back to `iac_generator`; everything else is
+reported once and shown to the human at the approval gate rather than looping.
 
 ## 4. VerifyReport  (verify → report)
 

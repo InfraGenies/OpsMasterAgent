@@ -4,7 +4,9 @@ import type { AuditEvent, NodeName } from "@ops-master/shared";
 const STEPS: { key: NodeName; label: string }[] = [
   { key: "intake", label: "Intake" },
   { key: "planner", label: "Planner" },
+  { key: "readiness_check", label: "Readiness" },
   { key: "iac_generator", label: "IaC Generator" },
+  { key: "policy_validator", label: "Policy & Security" },
   { key: "approval_gate", label: "Approval Gate" },
   { key: "deploy", label: "Deploy" },
   { key: "verify", label: "Verify" },

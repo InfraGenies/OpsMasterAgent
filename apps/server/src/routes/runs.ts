@@ -1,5 +1,12 @@
 import { Router } from "express";
-import type { CapacityPlan, IaCPayload, PlanRequest, VerifyReport } from "@ops-master/shared";
+import type {
+  CapacityPlan,
+  IaCPayload,
+  PlanRequest,
+  PolicyReport,
+  ReadinessReport,
+  VerifyReport,
+} from "@ops-master/shared";
 import { loadLatestNodeOutput } from "../orchestrator/audit.js";
 import { HttpError } from "../orchestrator/errors.js";
 import { startRun, submitDecision } from "../orchestrator/pipeline.js";
@@ -33,15 +40,27 @@ runsRouter.get("/:id", async (req, res, next) => {
     const run = await store.getRun(req.params.id);
     if (!run) throw new HttpError(404, "run not found");
 
-    const [planRequest, capacityPlan, iacPayload, verifyReport, decision] = await Promise.all([
-      loadLatestNodeOutput<PlanRequest>(store, run.request_id, "intake"),
-      loadLatestNodeOutput<CapacityPlan>(store, run.request_id, "planner"),
-      loadLatestNodeOutput<IaCPayload>(store, run.request_id, "iac_generator"),
-      loadLatestNodeOutput<VerifyReport>(store, run.request_id, "verify"),
-      store.getDecision(run.request_id),
-    ]);
+    const [planRequest, capacityPlan, readinessReport, iacPayload, policyReport, verifyReport, decision] =
+      await Promise.all([
+        loadLatestNodeOutput<PlanRequest>(store, run.request_id, "intake"),
+        loadLatestNodeOutput<CapacityPlan>(store, run.request_id, "planner"),
+        loadLatestNodeOutput<ReadinessReport>(store, run.request_id, "readiness_check"),
+        loadLatestNodeOutput<IaCPayload>(store, run.request_id, "iac_generator"),
+        loadLatestNodeOutput<PolicyReport>(store, run.request_id, "policy_validator"),
+        loadLatestNodeOutput<VerifyReport>(store, run.request_id, "verify"),
+        store.getDecision(run.request_id),
+      ]);
 
-    res.json({ run, plan_request: planRequest, capacity_plan: capacityPlan, iac_payload: iacPayload, verify_report: verifyReport, decision });
+    res.json({
+      run,
+      plan_request: planRequest,
+      capacity_plan: capacityPlan,
+      readiness_report: readinessReport,
+      iac_payload: iacPayload,
+      policy_report: policyReport,
+      verify_report: verifyReport,
+      decision,
+    });
   } catch (err) {
     next(err);
   }

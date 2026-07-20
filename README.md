@@ -127,11 +127,21 @@ Given the steer toward Node/TypeScript/React/Supabase, here's what this build do
 | Terraform / Kubernetes formats, UC-3 (voting app), UC-5 (Spring Boot), UC-6 (Minikube) | Not built | Scope cut to match the spec's own "minimum viable demo set: UC-1, UC-2, UC-7, UC-8" and "UC-6 only after UC-1–4 are rock solid." Compose-only covers 4 of 7 templates (`compose-single-v1`, `compose-web-db-v1`, `compose-web-db-cache-v1`, `compose-lb-replicas-v1`); adding Terraform/K8s renderers or the 5-service voting topology is straightforward follow-up work in `templates/catalog.ts` but wasn't in scope here. |
 | Nginx LB "added automatically when replicas > 1" (`02-planner.md`) | Same rule, but folded directly into `compose-web-db-v1` / `compose-single-v1` rendering rather than a separate template pick | Plain `docker compose up` (no Swarm) can't bind one fixed host port across N replicas of the same service — there's no built-in ingress mesh. Nginx fronts the service instead, resolved once at container start; Docker's embedded DNS returns one A record per replica, so a static upstream still round-robins across whatever's up at deploy time. This is what makes UC-1's 500rps→2-replica plan (which triggers the nginx rule) actually deployable with the same template used for 1-replica cases. |
 
-Everything else matches the spec directly: the 4 JSON contracts (`packages/shared/src/contracts.ts` mirrors
+Everything else matches the spec directly: the JSON contracts (`packages/shared/src/contracts.ts` mirrors
 `CONTRACTS.md` exactly), the node responsibilities and LLM/no-LLM boundaries per node, the hard command
 allow-list (`nodes/commandAllowList.ts`, `argv` arrays via `spawn`, never `shell: true`), the two safety
 rules from `WORKFLOW.md` (LLM never writes shell commands; nothing deploys without a human decision row),
 and the audit event shape.
+
+Two nodes were added beyond the original `01`–`07` spec set: `readiness_check`
+(`agent-md-files/02b-readiness-check.md`), a deterministic pre-flight scan (docker daemon, host ports, disk
+space, template topology) that runs before a single LLM call is spent on `iac_generator`; and
+`policy_validator` (`agent-md-files/03b-policy-validator.md`), a deterministic security/policy scan with a
+bounded self-correction loop back to `iac_generator`. Both close real gaps —
+`source_configuration/ops-master-agent-solution.md` §3/§4 describe these checkpoints as part of the pitch,
+but no code implemented them. See each `*.md` for exactly what it checks, what it can and can't auto-fix,
+and why (`readiness_check`'s doc also flags a separate pre-existing gap in how `modify` names its compose
+project, found while building its drift check — not fixed there, noted as a follow-up).
 
 ## Where each spec agent lives in code
 
@@ -140,7 +150,9 @@ and the audit event shape.
 | `00-orchestrator.md` | `apps/server/src/orchestrator/pipeline.ts`, `ws/hub.ts` |
 | `01-intake.md` | `apps/server/src/nodes/intake.ts`, prompt at `apps/server/src/prompts/01-intake.md` |
 | `02-planner.md` | `apps/server/src/nodes/planner.ts` + `planMerge.ts`, prompt at `prompts/02-planner.md` |
+| `02b-readiness-check.md` | `apps/server/src/nodes/readinessCheck.ts` (deterministic, no prompt file — no LLM call), wired into `orchestrator/pipeline.ts: reachApprovalGate`, UI: `web/src/components/ReadinessReportView.tsx` |
 | `03-iac-generator.md` | `apps/server/src/nodes/iacGenerator.ts`, templates in `templates/catalog.ts`, prompt at `prompts/03-iac-generator.md` |
+| `03b-policy-validator.md` | `apps/server/src/nodes/policyValidator.ts` (deterministic, no prompt file — no LLM call), self-correction loop lives in `orchestrator/pipeline.ts: reachApprovalGate`, UI: `web/src/components/PolicyReportView.tsx` |
 | `04-approval-gate.md` | `orchestrator/pipeline.ts` (`reachApprovalGate`, `submitDecision`, timeout), UI: `web/src/components/ApprovalGate.tsx` |
 | `05-deploy-agent.md` | `apps/server/src/nodes/deploy.ts`, `commandAllowList.ts` |
 | `06-verify-agent.md` | `apps/server/src/nodes/verify.ts` |

@@ -18,9 +18,12 @@ import type { TemplateId } from "@ops-master/shared";
 const execFileAsync = promisify(execFile);
 const SYSTEM_PROMPT = loadPrompt("03-iac-generator.md");
 
-function buildUserPrompt(plan: CapacityPlan, isModify: boolean, hasDiff: boolean): string {
+function buildUserPrompt(plan: CapacityPlan, isModify: boolean, hasDiff: boolean, feedback?: string): string {
+  const feedbackNote = feedback
+    ? `\n\nYour previous output triggered this policy finding — fix it:\n${feedback}`
+    : "";
   return [
-    `CapacityPlan:\n${JSON.stringify(plan, null, 2)}`,
+    `CapacityPlan:\n${JSON.stringify(plan, null, 2)}${feedbackNote}`,
     `Template catalogue:\n${templateCatalogSummary()}`,
     isModify
       ? `operation=modify.${hasDiff ? " The previous environment's files are held by the backend for diff_from; you do not need to supply them." : ""}`
@@ -33,7 +36,9 @@ function buildUserPrompt(plan: CapacityPlan, isModify: boolean, hasDiff: boolean
 }
 
 function mockIacGenerator(
-  plan: CapacityPlan
+  plan: CapacityPlan,
+  demoWeakSecret: boolean,
+  isSelfCorrection: boolean
 ): { template_id: TemplateId; variables: Record<string, unknown> } | { error: "no_template"; needed: string } {
   const hasDb = !!dbService(plan);
   const hasCache = !!cacheService(plan);
@@ -49,9 +54,15 @@ function mockIacGenerator(
   else if (hasCache) template_id = "compose-lb-replicas-v1";
   else template_id = "compose-single-v1";
 
+  // Demo hook for the policy_validator self-correction loop (mirrors
+  // nodes/verify.ts's forceFail trigger): the first mock attempt "forgets"
+  // rule 3 and emits a literal weak password so the retry path is
+  // demoable end-to-end with MOCK_LLM=true and no real API key.
+  const dbPassword = demoWeakSecret && !isSelfCorrection ? "changeme" : "__GENERATE__";
+
   return {
     template_id,
-    variables: { health_path: "/", db_name: "appdb", db_user: "appuser", db_password: "__GENERATE__" },
+    variables: { health_path: "/", db_name: "appdb", db_user: "appuser", db_password: dbPassword },
   };
 }
 
@@ -85,6 +96,10 @@ export interface IacGeneratorInput {
   isModify: boolean;
   diffFrom: IaCFile[] | null;
   deploymentDir: string;
+  /** Set by the orchestrator's self-correction loop when a prior attempt's policy_validator run found an auto-fixable issue. */
+  feedback?: string;
+  /** Demo-only trigger (see mockIacGenerator) so the self-correction loop is exercisable without a real LLM. */
+  demoWeakSecret?: boolean;
 }
 
 export type IacGeneratorOutput =
@@ -95,8 +110,8 @@ export async function runIacGenerator(input: IacGeneratorInput): Promise<IacGene
   const result = await runLLMJson({
     schema: IaCGeneratorLLMOutputSchema,
     system: SYSTEM_PROMPT,
-    user: buildUserPrompt(input.plan, input.isModify, input.diffFrom !== null),
-    mock: () => mockIacGenerator(input.plan),
+    user: buildUserPrompt(input.plan, input.isModify, input.diffFrom !== null, input.feedback),
+    mock: () => mockIacGenerator(input.plan, input.demoWeakSecret ?? false, input.feedback !== undefined),
     node: "iac_generator",
   });
 

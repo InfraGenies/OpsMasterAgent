@@ -33,23 +33,23 @@ export function RunList({
   onSelect: (id: string) => void;
 }) {
   if (!runs.length) {
-    return <p className="text-xs text-slate-500 px-2">No runs yet — submit a request above.</p>;
+    return <p className="text-sm text-slate-400 px-2">No runs yet — submit a request above.</p>;
   }
   return (
-    <ul className="space-y-1.5">
+    <ul className="space-y-2">
       {runs.map((run) => (
         <li key={run.request_id}>
           <button
             onClick={() => onSelect(run.request_id)}
-            className={`w-full text-left px-3 py-2.5 rounded-lg text-xs border transition-colors duration-150 ${
+            className={`w-full text-left px-3.5 py-3 rounded-lg text-sm border transition-colors duration-150 ${
               selectedId === run.request_id
                 ? "border-indigo-500/70 bg-indigo-950/30 shadow-md shadow-indigo-950/30"
                 : "border-slate-800/60 bg-slate-900/40 hover:bg-slate-800/60 hover:border-slate-700"
             }`}
           >
             <div className="truncate text-slate-200 font-medium">{run.raw_text}</div>
-            <div className="flex items-center justify-between mt-1.5 gap-2">
-              <span className="text-slate-500 font-mono text-[10px] truncate">{run.request_id}</span>
+            <div className="flex items-center justify-between mt-2 gap-2">
+              <span className="text-slate-400 font-mono text-xs truncate">{run.request_id}</span>
               <StatusBadge status={run.status} />
             </div>
           </button>

@@ -148,6 +148,46 @@ export const IaCGeneratorLLMOutputSchema = z.union([
 export type IaCGeneratorLLMOutput = z.infer<typeof IaCGeneratorLLMOutputSchema>;
 
 // ---------------------------------------------------------------------------
+// 2b. ReadinessReport (planner -> readiness_check -> iac_generator)
+// ---------------------------------------------------------------------------
+export const ReadinessCheckResultSchema = z.object({
+  name: z.string(),
+  status: z.enum(["pass", "fail", "skipped"]),
+  detail: z.string(),
+  blocking: z.boolean(),
+});
+export type ReadinessCheckResult = z.infer<typeof ReadinessCheckResultSchema>;
+
+export const ReadinessReportSchema = z.object({
+  request_id: z.string(),
+  checks: z.array(ReadinessCheckResultSchema),
+  ready: z.boolean(),
+  blockers: z.array(z.string()),
+});
+export type ReadinessReport = z.infer<typeof ReadinessReportSchema>;
+
+// ---------------------------------------------------------------------------
+// 3b. PolicyReport (iac_generator <-> policy_validator self-correction loop,
+// then policy_validator -> approval gate)
+// ---------------------------------------------------------------------------
+export const PolicyFindingSchema = z.object({
+  rule_id: z.string(),
+  severity: z.enum(["critical", "high", "medium", "low"]),
+  message: z.string(),
+  file: z.string().nullable(),
+  auto_fixable: z.boolean(),
+});
+export type PolicyFinding = z.infer<typeof PolicyFindingSchema>;
+
+export const PolicyReportSchema = z.object({
+  request_id: z.string(),
+  findings: z.array(PolicyFindingSchema),
+  passed: z.boolean(),
+  attempts: z.number().int().min(1),
+});
+export type PolicyReport = z.infer<typeof PolicyReportSchema>;
+
+// ---------------------------------------------------------------------------
 // 4. VerifyReport (verify -> report)
 // ---------------------------------------------------------------------------
 export const CheckResultSchema = z.object({
@@ -184,7 +224,9 @@ export type VerifyReport = z.infer<typeof VerifyReportSchema>;
 export const NodeNameSchema = z.enum([
   "intake",
   "planner",
+  "readiness_check",
   "iac_generator",
+  "policy_validator",
   "approval_gate",
   "deploy",
   "verify",
@@ -263,7 +305,9 @@ export interface PipelineState {
   request_id: string;
   plan_request?: PlanRequest;
   capacity_plan?: CapacityPlan;
+  readiness_report?: ReadinessReport;
   iac_payload?: IaCPayload;
+  policy_report?: PolicyReport;
   verify_report?: VerifyReport;
   decision?: Decision;
   deploy_ok?: boolean;

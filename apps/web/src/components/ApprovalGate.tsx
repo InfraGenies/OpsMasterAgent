@@ -1,15 +1,20 @@
 import { useState } from "react";
-import type { CapacityPlan, IaCPayload } from "@ops-master/shared";
+import type { CapacityPlan, IaCPayload, PolicyReport } from "@ops-master/shared";
 
 export function ApprovalGate({
   plan,
   iac,
+  policy,
   onDecision,
 }: {
   plan: CapacityPlan;
   iac: IaCPayload;
+  policy?: PolicyReport | null;
   onDecision: (action: "approve" | "reject" | "edit", comment: string | null, patch?: Record<string, unknown>) => void;
 }) {
+  const unresolvedBlocking = policy?.findings.filter(
+    (f) => f.severity === "critical" || f.severity === "high"
+  );
   const [comment, setComment] = useState("");
   const [editing, setEditing] = useState(false);
   const [edits, setEdits] = useState<Record<string, { replicas: number; memory: string }>>(() =>
@@ -44,6 +49,13 @@ export function ApprovalGate({
           {iac.validation.tool}: {iac.validation.ok ? "valid" : "invalid"}
         </span>
       </div>
+
+      {unresolvedBlocking && unresolvedBlocking.length > 0 && (
+        <div className="text-xs text-rose-300 bg-rose-950/60 border border-rose-800 rounded-lg p-2.5">
+          ⚠️ {unresolvedBlocking.length} unresolved policy finding{unresolvedBlocking.length > 1 ? "s" : ""} — review
+          the Policy &amp; Security section below before approving.
+        </div>
+      )}
 
       <div className="text-xs text-slate-400 font-mono bg-slate-950/60 border border-slate-800 rounded-lg p-2.5 space-y-1">
         <div>

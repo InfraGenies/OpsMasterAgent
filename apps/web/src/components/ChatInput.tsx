@@ -25,10 +25,10 @@ export function ChatInput({ onSubmit, disabled }: { onSubmit: (text: string) => 
   }
 
   return (
-    <div className="card p-3 space-y-2.5">
+    <div className="card p-4 space-y-3">
       <textarea
-        className="field w-full p-2.5 text-sm resize-none"
-        rows={3}
+        className="field w-full p-3.5 text-base resize-none"
+        rows={5}
         placeholder='Describe the infrastructure you need, e.g. "Create a staging environment for a Node.js application with PostgreSQL capable of handling 500 requests/second."'
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -36,16 +36,16 @@ export function ChatInput({ onSubmit, disabled }: { onSubmit: (text: string) => 
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
         }}
       />
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap gap-2">
         {EXAMPLES.map((ex) => (
           <button key={ex.label} className="chip" onClick={() => setText(ex.text)} type="button" title={ex.text}>
             {ex.label}
           </button>
         ))}
       </div>
-      <button className="btn-primary w-full" onClick={submit} disabled={disabled || !text.trim()}>
+      <button className="btn-primary w-full text-base py-2.5" onClick={submit} disabled={disabled || !text.trim()}>
         {disabled ? "Submitting…" : "Submit request"}
-        <span className="text-indigo-200 text-xs font-normal">Ctrl+↵</span>
+        <span className="text-indigo-200 text-sm font-normal">Ctrl+↵</span>
       </button>
     </div>
   );

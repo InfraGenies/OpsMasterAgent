@@ -5,6 +5,7 @@ import type {
   EnvironmentRecord,
   IaCPayload,
   PlanRequest,
+  PolicyReport,
 } from "@ops-master/shared";
 import { env } from "../config.js";
 import { decodeSnapshot, encodeSnapshot } from "../nodes/envSnapshot.js";
@@ -12,6 +13,8 @@ import { runDeploy } from "../nodes/deploy.js";
 import { runIacGenerator } from "../nodes/iacGenerator.js";
 import { runIntake } from "../nodes/intake.js";
 import { runPlanner } from "../nodes/planner.js";
+import { runPolicyValidator } from "../nodes/policyValidator.js";
+import { runReadinessCheck } from "../nodes/readinessCheck.js";
 import { runReport } from "../nodes/report.js";
 import { runRollback } from "../nodes/rollback.js";
 import { runVerify } from "../nodes/verify.js";
@@ -181,39 +184,107 @@ async function reachApprovalGate(
   existing: { envId: string; capacityPlan: CapacityPlan; files: IaCPayload["files"] } | null
 ): Promise<void> {
   const store = getStore();
-  broadcastEvent("node_started", requestId, "iac_generator");
-  const iacResult = await runIacGenerator({
-    requestId,
-    projectName: projectNameFor(requestId),
-    plan,
-    isModify: planRequest.operation === "modify",
-    diffFrom: existing?.files ?? null,
-    deploymentDir: deploymentDirFor(requestId),
-  });
 
-  if (!iacResult.ok) {
+  // readiness_check (02b-readiness-check.md): deterministic pre-flight scan,
+  // runs before a single LLM call is spent on iac_generator. Refuses the run
+  // the same way an infeasible plan does — no new terminal state.
+  const existingEnvRecord = existing ? await store.getEnvironment(existing.envId) : null;
+  const demoPortConflict = /\bport conflict\b/i.test(planRequest.raw_text);
+
+  broadcastEvent("node_started", requestId, "readiness_check");
+  const readiness = await runReadinessCheck({
+    requestId,
+    plan,
+    existingPlan: existing?.capacityPlan ?? null,
+    existingEnvRecord,
+    demoPortConflict,
+  });
+  await logAudit(store, {
+    request_id: requestId,
+    node: "readiness_check",
+    actor: "agent",
+    status: readiness.ready ? "success" : "failure",
+    detail: readiness.ready
+      ? `${readiness.checks.length} check(s), all clear`
+      : `blocked: ${readiness.blockers.join("; ")}`,
+    output: readiness,
+  });
+  broadcastEvent("node_finished", requestId, "readiness_check", readiness);
+
+  if (!readiness.ready) {
+    await refuseRun(requestId, `infrastructure not ready: ${readiness.blockers.join("; ")}`);
+    return;
+  }
+
+  // Demo hook (mirrors nodes/verify.ts's forceFail): lets the self-correction
+  // loop be exercised end-to-end with MOCK_LLM=true and no real API key.
+  const demoWeakSecret = /\bweak password\b/i.test(planRequest.raw_text);
+
+  const MAX_ATTEMPTS = 3;
+  let feedback: string | undefined;
+  let iacValue!: IaCPayload;
+  let policyReport!: PolicyReport;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    broadcastEvent("node_started", requestId, "iac_generator");
+    const iacResult = await runIacGenerator({
+      requestId,
+      projectName: projectNameFor(requestId),
+      plan,
+      isModify: planRequest.operation === "modify",
+      diffFrom: existing?.files ?? null,
+      deploymentDir: deploymentDirFor(requestId),
+      feedback,
+      demoWeakSecret,
+    });
+
+    if (!iacResult.ok) {
+      await logAudit(store, {
+        request_id: requestId,
+        node: "iac_generator",
+        actor: "agent",
+        status: "failure",
+        detail: `no_template: ${iacResult.needed}`,
+        input: plan,
+      });
+      await refuseRun(requestId, `no template in the catalogue covers this topology: ${iacResult.needed}`);
+      return;
+    }
+
+    iacValue = iacResult.value;
     await logAudit(store, {
       request_id: requestId,
       node: "iac_generator",
       actor: "agent",
-      status: "failure",
-      detail: `no_template: ${iacResult.needed}`,
+      status: "success",
+      detail: attempt === 1 ? (iacResult.mocked ? "mocked" : "ok") : `self-correction attempt ${attempt}`,
       input: plan,
+      output: iacValue,
     });
-    await refuseRun(requestId, `no template in the catalogue covers this topology: ${iacResult.needed}`);
-    return;
-  }
+    broadcastEvent("node_finished", requestId, "iac_generator", iacValue);
 
-  await logAudit(store, {
-    request_id: requestId,
-    node: "iac_generator",
-    actor: "agent",
-    status: "success",
-    detail: iacResult.mocked ? "mocked" : "ok",
-    input: plan,
-    output: iacResult.value,
-  });
-  broadcastEvent("node_finished", requestId, "iac_generator", iacResult.value);
+    // policy_validator: deterministic scan, no LLM — 03b-policy-validator.md.
+    // Loops back to iac_generator only for findings it can plausibly fix
+    // (currently: a literal secret instead of "__GENERATE__"); anything else
+    // is surfaced at the gate rather than spinning the loop pointlessly.
+    broadcastEvent("node_started", requestId, "policy_validator");
+    policyReport = runPolicyValidator(iacValue, plan, planRequest, attempt);
+    await logAudit(store, {
+      request_id: requestId,
+      node: "policy_validator",
+      actor: "agent",
+      status: policyReport.passed ? "success" : "failure",
+      detail: `${policyReport.findings.length} finding(s) on attempt ${attempt}`,
+      output: policyReport,
+    });
+    broadcastEvent("node_finished", requestId, "policy_validator", policyReport);
+
+    const fixableBlocking = policyReport.findings.filter(
+      (f) => (f.severity === "critical" || f.severity === "high") && f.auto_fixable
+    );
+    if (policyReport.passed || attempt === MAX_ATTEMPTS || fixableBlocking.length === 0) break;
+    feedback = fixableBlocking.map((f) => `[${f.rule_id}] ${f.message}`).join("\n");
+  }
 
   await store.updateRunStatus(requestId, "awaiting_approval");
   await logAudit(store, {
@@ -223,7 +294,7 @@ async function reachApprovalGate(
     status: "pending",
     detail: "awaiting human decision",
   });
-  broadcastEvent("awaiting_approval", requestId, "approval_gate", { plan, iac: iacResult.value });
+  broadcastEvent("awaiting_approval", requestId, "approval_gate", { plan, iac: iacValue, policy: policyReport });
   scheduleApprovalTimeout(requestId);
 }
 

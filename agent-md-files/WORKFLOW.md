@@ -14,8 +14,12 @@ flowchart TD
     ORC --> INT[1. Intake / Validator\nparse request → PlanRequest JSON\nreject unsafe / infeasible asks]
     INT -- invalid / infeasible --> REFUSE[/Refusal with reasoning\n+ suggested alternative/] --> AUD
     INT -- PlanRequest --> PLN[2. Planner Agent\ncapacity plan: services, cpu,\nmemory, replicas, storage\n+ reasoning shown]
-    PLN -- CapacityPlan --> IAC[3. IaC Generator\nfills PRE-APPROVED templates only\nTerraform / compose / K8s]
-    IAC -- IaCPayload --> GATE{{4. 🛑 HUMAN APPROVAL GATE\nplan + IaC diff shown in UI\nLangGraph interrupt}}
+    PLN -- CapacityPlan --> RDY{2b. Readiness Check\nno LLM — docker daemon, ports,\ndisk, template topology}
+    RDY -- not ready --> REFUSE
+    RDY -- ready --> IAC[3. IaC Generator\nfills PRE-APPROVED templates only\nTerraform / compose / K8s]
+    IAC -- IaCPayload --> POL{3b. Policy & Security Validator\nno LLM — deterministic scan}
+    POL -- unresolved, auto-fixable finding --> IAC
+    POL -- passed, or nothing left to auto-fix --> GATE{{4. 🛑 HUMAN APPROVAL GATE\nplan + IaC diff + policy findings shown in UI\nLangGraph interrupt}}
 
     GATE -- ❌ rejected / edited --> PLN
     GATE -- ✅ approved --> DEP[5. Deploy Agent\nexecutes ONLY vetted commands:\ndocker compose up / terraform apply\nstreams logs to UI]
@@ -34,7 +38,9 @@ flowchart TD
 
     INT -.log.-> AUD
     PLN -.log.-> AUD
+    RDY -.log.-> AUD
     IAC -.log.-> AUD
+    POL -.log.-> AUD
     GATE -.log.-> AUD
     DEP -.log.-> AUD
     VER -.log.-> AUD
@@ -66,8 +72,15 @@ User NL request
  2. PLANNER ──► CapacityPlan (with reasoning)
       │
       ▼
+ 2b. READINESS CHECK (no LLM) ──not ready──► REFUSE (reasoned) ──► audit + report
+      │ ready
+      ▼
  3. IaC GENERATOR (pre-approved templates only) ──► IaCPayload
       │
+      ▼
+ 3b. POLICY & SECURITY VALIDATOR (no LLM) ──unresolved, auto-fixable──┐
+      │ passed / nothing left to auto-fix                             │
+      │◄────────────────────────────────────── back to IaC GENERATOR ─┘
       ▼
  4. ██ HUMAN APPROVAL GATE ██  ◄── rejected/edited ──┐
       │ approved                                     │ loops to Planner
@@ -92,14 +105,16 @@ User NL request
 |---|---|---|---|---|
 | 1 | `intake` | raw text → `PlanRequest` | ✅ | ❌ |
 | 2 | `planner` | `PlanRequest` → `CapacityPlan` | ✅ | ❌ |
+| 2b | `readiness_check` | `CapacityPlan` → `ReadinessReport` | ❌ (deterministic scan) | ❌ (read-only diagnostics only) |
 | 3 | `iac_generator` | `CapacityPlan` → `IaCPayload` | ✅ (fills templates) | ❌ |
-| 4 | `approval_gate` | `IaCPayload` → approved/rejected | ❌ (human) | ❌ |
+| 3b | `policy_validator` | `IaCPayload` → `PolicyReport` | ❌ (deterministic scan) | ❌ |
+| 4 | `approval_gate` | `IaCPayload` + `PolicyReport` → approved/rejected | ❌ (human) | ❌ |
 | 5 | `deploy` | `IaCPayload` → `DeployResult` | ❌ | ✅ allow-listed only |
 | 6 | `verify` | `DeployResult` → `VerifyReport` | ✅ (summarise) | ✅ k6 + health only |
 | 6b | `rollback` | any failure → restored state | ❌ | ✅ allow-listed only |
 | 7 | `report` | all state → final report | ✅ (narrative) | ❌ |
 
-**Conditional edges:** `intake→refuse` (infeasible), `gate→planner` (rejected), `deploy→rollback` (non-zero exit), `verify→rollback` (red verdict).
+**Conditional edges:** `intake→refuse` (infeasible), `readiness_check→refuse` (not ready — port conflict, docker daemon down, low disk, unsupported topology), `policy_validator→iac_generator` (unresolved, auto-fixable finding — capped at 2 retries), `gate→planner` (rejected), `deploy→rollback` (non-zero exit), `verify→rollback` (red verdict).
 
 ## The two safety rules (repeat these to judges)
 

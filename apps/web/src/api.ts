@@ -5,6 +5,8 @@ import type {
   DecisionAction,
   IaCPayload,
   PlanRequest,
+  PolicyReport,
+  ReadinessReport,
   Run,
   VerifyReport,
 } from "@ops-master/shared";
@@ -35,7 +37,9 @@ export interface RunDetail {
   run: Run;
   plan_request: PlanRequest | null;
   capacity_plan: CapacityPlan | null;
+  readiness_report: ReadinessReport | null;
   iac_payload: IaCPayload | null;
+  policy_report: PolicyReport | null;
   verify_report: VerifyReport | null;
   decision: Decision | null;
 }

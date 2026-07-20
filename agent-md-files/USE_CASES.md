@@ -108,6 +108,39 @@ Two short failure scenarios — judges score governance heavily:
 
 ---
 
+## UC-9 — TARGET STATE: AWS/Terraform multi-tier costing — retail-store-sample-app
+
+| | |
+|---|---|
+| **Repo** | https://github.com/aws-containers/retail-store-sample-app |
+| **Stack** | 5 microservices — UI (Java), Catalog (Go + MySQL/RDS), Cart (Java + DynamoDB), Orders (Java + MySQL/RDS), Checkout (Node.js + Redis/ElastiCache) — AWS's own reference retail app, built specifically to demo ECS/EKS/App Runner deployment via its bundled `terraform/eks/default`, `terraform/eks/minimal`, `terraform/ecs/default`, and `terraform/apprunner` modules |
+| **NL request** | *"Deploy the retail-store-sample-app to AWS for a staging environment — give me a cost-conscious option and a highly-available option, with pricing for each."* |
+| **Deploy target** | Terraform → AWS (ECS Fargate for the economy tier, EKS for the HA tier) |
+| **What it proves** | The planner reasoning about **real managed-service substitution** (containerized DB vs. RDS/DynamoDB/ElastiCache), producing genuinely different topologies per cost tier (not just replica-count scaling), and rendering **Terraform**, not compose — the first use case that exercises `IaCPayload.format: "terraform"` end-to-end |
+| **Verify** | `terraform plan` clean (no live `apply` in the sandbox demo — cost and blast radius are real on AWS, unlike every other UC); health checks + smoke test against the ALB/ingress endpoint if actually applied in a scratch AWS account |
+
+**Status: not runnable today.** This is a deliberately forward-looking use case — it names the two gaps that block it rather than pretending they're already closed:
+
+1. **No multi-tier `CapacityPlanOption[]` output.** The planner today emits exactly one `CapacityPlan`. This UC is the worked example for the multi-tier planning proposal
+   (`source_configuration/ops-master-agent-enhancements-proposal.md` §2) — see the two tiers below.
+2. **No AWS/Terraform template family.** `templates/catalog.ts` only renders `compose-*` templates today; `IaCPayload.format` already allows `"terraform"` in the contract (`CONTRACTS.md` §3), but nothing implements it. Building this UC for real means adding `tf-ecs-fargate-v1` / `tf-eks-v1` template definitions that fill the repo's own bundled Terraform modules rather than hand-rolling AWS resources from scratch — same "LLM picks a template, backend renders" discipline as compose, extended to a second `format`.
+
+**Worked example — the two costing tiers a multi-tier planner should produce for this request:**
+
+| | **Tier X — Economy** (`estimated_cost_usd_monthly: ~150`) | **Tier Y — High-Availability** (`estimated_cost_usd_monthly: ~430`) |
+|---|---|---|
+| Compute | ECS Fargate, 1 task per service (5 services), 0.25 vCPU / 0.5 GB each, single AZ | EKS (managed control plane) + 3× `t3.medium` worker nodes across 2 AZs, 2–3 pod replicas per service |
+| Catalog / Orders data | 1× RDS `db.t3.micro` MySQL per service, single-AZ | 1× RDS `db.t3.small` MySQL per service, **Multi-AZ** failover |
+| Cart data | DynamoDB, on-demand capacity | DynamoDB, on-demand + auto-scaling headroom |
+| Checkout data | ElastiCache Redis `cache.t3.micro`, single node | ElastiCache Redis `cache.t3.small`, 2-node replication group |
+| Networking | 1× ALB, 1× NAT Gateway | 1× ALB, 2× NAT Gateway (multi-AZ egress) |
+| Availability notes | No failover on compute or DB; fine for a demo/staging env that can tolerate a restart | Survives an AZ outage on every tier — DB, cache, and compute all have a standby |
+| **Reasoning (planner-shown)** | "Staging traffic is low and this is cost-sensitive — one Fargate task per service and single-AZ managed data stores minimize spend; acceptable because staging has no uptime SLA." | "If this needs to survive an AZ failure (a prod-adjacent staging or pre-prod gate), EKS + Multi-AZ RDS + replicated ElastiCache costs ~2.9× more but removes every single point of failure." |
+
+Figures are illustrative — rough, on-demand `us-east-1`-shaped estimates from public AWS pricing patterns (Fargate ~$0.04048/vCPU-hr + ~$0.004445/GB-hr, RDS/ElastiCache instance-hour pricing, EKS control plane at $0.10/hr, NAT Gateway ~$0.045/hr + data processing), **not** a live pricing API call — exactly the "local rate table now, Infracost/AWS Price List API later" scoping already called out in the enhancements proposal §2.
+
+---
+
 ## Selection summary
 
 | UC | Scenario axis | Effort | Demo value |
@@ -120,5 +153,6 @@ Two short failure scenarios — judges score governance heavily:
 | 6 | Kubernetes target | High | ★★★★ (stretch only) |
 | 7 | Modify existing env | Medium | ★★★★★ |
 | 8 | Refusal + rollback | Low | ★★★★★ |
+| 9 | AWS/Terraform multi-tier costing (target state) | High | ★★★★★ (once §2 + a Terraform template family exist) |
 
-Minimum viable demo set: **UC-1, UC-2, UC-7, UC-8** (one repo family + governance story). Add UC-3/4 for variety, UC-5/6 if ahead of schedule.
+Minimum viable demo set: **UC-1, UC-2, UC-7, UC-8** (one repo family + governance story). Add UC-3/4 for variety, UC-5/6 if ahead of schedule. UC-9 is the roadmap use case for the multi-tier capacity planning + Terraform work — not part of the current runnable demo set.

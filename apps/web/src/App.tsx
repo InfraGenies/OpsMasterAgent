@@ -8,6 +8,8 @@ import { CapacityPlanView } from "./components/CapacityPlanView";
 import { ChatInput } from "./components/ChatInput";
 import { IacFileViewer } from "./components/IacFileViewer";
 import { PipelineStepper } from "./components/PipelineStepper";
+import { PolicyReportView } from "./components/PolicyReportView";
+import { ReadinessReportView } from "./components/ReadinessReportView";
 import { ReportView } from "./components/ReportView";
 import { RunList, StatusBadge } from "./components/RunList";
 import { VerifyReportView } from "./components/VerifyReportView";
@@ -97,17 +99,17 @@ export function App() {
     : null;
 
   return (
-    <div className="min-h-screen grid grid-cols-1 md:grid-cols-[340px_1fr]">
-      <aside className="border-r border-slate-800/80 p-4 space-y-4 md:h-screen md:overflow-y-auto md:sticky md:top-0 bg-slate-950/60">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-sm shadow-md shadow-indigo-950/50 select-none">
+    <div className="min-h-screen grid grid-cols-1 md:grid-cols-[440px_1fr]">
+      <aside className="border-r border-slate-800/80 p-5 space-y-5 md:h-screen md:overflow-y-auto md:sticky md:top-0 bg-slate-950/60">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-lg shadow-md shadow-indigo-950/50 select-none">
             ⚙️
           </div>
           <div>
-            <h1 className="text-sm font-semibold bg-gradient-to-r from-slate-100 to-slate-400 bg-clip-text text-transparent">
+            <h1 className="text-lg font-semibold bg-gradient-to-r from-slate-100 to-slate-300 bg-clip-text text-transparent">
               Ops Master Agent
             </h1>
-            <p className="text-[11px] text-slate-500">infra lifecycle automation</p>
+            <p className="text-sm text-slate-400">infra lifecycle automation</p>
           </div>
         </div>
         <ChatInput onSubmit={handleSubmit} disabled={submitting} />
@@ -152,6 +154,13 @@ export function App() {
               </section>
             )}
 
+            {detail.readiness_report && (
+              <section className="card p-4">
+                <h3 className="card-title mb-2.5">Readiness</h3>
+                <ReadinessReportView report={detail.readiness_report} />
+              </section>
+            )}
+
             {detail.iac_payload && (
               <section className="card p-4">
                 <h3 className="card-title mb-2.5">
@@ -161,8 +170,20 @@ export function App() {
               </section>
             )}
 
+            {detail.policy_report && (
+              <section className="card p-4">
+                <h3 className="card-title mb-2.5">Policy &amp; Security</h3>
+                <PolicyReportView report={detail.policy_report} />
+              </section>
+            )}
+
             {detail.run.status === "awaiting_approval" && detail.capacity_plan && detail.iac_payload && (
-              <ApprovalGate plan={detail.capacity_plan} iac={detail.iac_payload} onDecision={handleDecision} />
+              <ApprovalGate
+                plan={detail.capacity_plan}
+                iac={detail.iac_payload}
+                policy={detail.policy_report}
+                onDecision={handleDecision}
+              />
             )}
 
             {logs.length > 0 && (
