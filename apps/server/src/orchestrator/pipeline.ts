@@ -413,7 +413,14 @@ function applyCapacityPlanPatch(fullPlan: CapacityPlan, patch: Record<string, un
         const p = patchServices.find((x) => x.name === s.name);
         return p ? { ...s, replicas: p.replicas ?? s.replicas, memory: p.memory ?? s.memory, cpu: p.cpu ?? s.cpu } : s;
       });
-      return { ...opt, services, estimated_cost_usd_monthly: estimateMonthlyCost(services, opt.storage) };
+      const cost = estimateMonthlyCost(services, opt.storage);
+      return {
+        ...opt,
+        services,
+        estimated_cost_usd_monthly: cost.totalUsdMonthly,
+        cost_breakdown: cost.breakdown,
+        cost_basis: "rate_table" as const,
+      };
     });
     plan = { ...plan, options };
   }

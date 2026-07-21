@@ -1,8 +1,9 @@
-import type { ZodType } from "zod";
+import type { ZodType, ZodTypeDef } from "zod";
 import { completeRaw, extractJson, isMockMode } from "./client.js";
 
 export interface RunLLMJsonArgs<T> {
-  schema: ZodType<T>;
+  /** Input intentionally left as `any`: schemas with `.default()` fields (e.g. CapacityPlanOptionSchema's cost_basis) have an Input narrower than Output T, and we only care about the parsed Output here. */
+  schema: ZodType<T, ZodTypeDef, any>;
   system: string;
   user: string;
   /** Deterministic stand-in used when MOCK_LLM=true or no API key is set. */

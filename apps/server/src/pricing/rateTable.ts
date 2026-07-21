@@ -26,13 +26,22 @@ function parseSizeGi(size: string): number {
   return match[2].toLowerCase() === "gi" ? value : value / 1024;
 }
 
+export interface CostEstimate {
+  totalUsdMonthly: number;
+  breakdown: { label: string; usd_monthly: number }[];
+}
+
 /** Rounded whole-dollar monthly estimate — precision beyond that is false confidence for a rate-table figure. */
-export function estimateMonthlyCost(services: ServiceSpec[], storage: StorageSpec[]): number {
-  const computeUsd = services.reduce((sum, s) => {
+export function estimateMonthlyCost(services: ServiceSpec[], storage: StorageSpec[]): CostEstimate {
+  const breakdown = services.map((s) => {
     const cores = parseCpuCores(s.cpu) * s.replicas;
     const ramGi = parseSizeGi(s.memory) * s.replicas;
-    return sum + (cores * USD_PER_VCPU_HOUR + ramGi * USD_PER_GIB_RAM_HOUR) * HOURS_PER_MONTH;
-  }, 0);
+    const usd = (cores * USD_PER_VCPU_HOUR + ramGi * USD_PER_GIB_RAM_HOUR) * HOURS_PER_MONTH;
+    return { label: `${s.name} (${s.replicas}x ${s.cpu} vCPU / ${s.memory})`, usd_monthly: Math.round(usd) };
+  });
   const storageUsd = storage.reduce((sum, s) => sum + parseSizeGi(s.size) * USD_PER_GIB_STORAGE_MONTH, 0);
-  return Math.round(computeUsd + storageUsd);
+  if (storage.length > 0) {
+    breakdown.push({ label: `Storage (${storage.map((s) => s.size).join(" + ")})`, usd_monthly: Math.round(storageUsd) });
+  }
+  return { totalUsdMonthly: breakdown.reduce((sum, b) => sum + b.usd_monthly, 0), breakdown };
 }

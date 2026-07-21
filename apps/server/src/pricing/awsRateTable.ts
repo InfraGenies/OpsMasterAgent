@@ -23,7 +23,18 @@ export interface AwsFargateService {
   taskCount: number;
 }
 
-export function estimateEcsFargateMonthlyCost(services: AwsFargateService[], natGateways: number): number {
+export interface CostEstimate {
+  totalUsdMonthly: number;
+  breakdown: { label: string; usd_monthly: number }[];
+}
+
+/** Rounds a line item the same way the total is rounded, so displayed parts always sum to the displayed total. */
+function roundedBreakdown(parts: { label: string; usd: number }[]): CostEstimate {
+  const breakdown = parts.map((p) => ({ label: p.label, usd_monthly: Math.round(p.usd) }));
+  return { totalUsdMonthly: breakdown.reduce((sum, p) => sum + p.usd_monthly, 0), breakdown };
+}
+
+export function estimateEcsFargateMonthlyCost(services: AwsFargateService[], natGateways: number): CostEstimate {
   const computeUsd = services.reduce(
     (sum, s) => sum + (s.vcpu * FARGATE_USD_PER_VCPU_HOUR + s.gib * FARGATE_USD_PER_GIB_HOUR) * s.taskCount * HOURS_PER_MONTH,
     0
@@ -32,15 +43,28 @@ export function estimateEcsFargateMonthlyCost(services: AwsFargateService[], nat
   const dynamoUsd = DYNAMODB_ON_DEMAND_USD_MONTHLY_BASELINE; // cart, on-demand
   const cacheUsd = ELASTICACHE_T3_MICRO_USD_PER_HOUR * HOURS_PER_MONTH; // checkout, single node
   const natUsd = natGateways * NAT_GATEWAY_USD_PER_HOUR * HOURS_PER_MONTH;
-  return Math.round(computeUsd + rdsUsd + dynamoUsd + cacheUsd + natUsd);
+  return roundedBreakdown([
+    { label: "Compute (ECS Fargate, 5 services)", usd: computeUsd },
+    { label: "RDS (catalog + orders, single-AZ)", usd: rdsUsd },
+    { label: "DynamoDB (cart, on-demand)", usd: dynamoUsd },
+    { label: "ElastiCache (checkout, single node)", usd: cacheUsd },
+    { label: `NAT Gateway (${natGateways})`, usd: natUsd },
+  ]);
 }
 
-export function estimateEksMonthlyCost(nodeCount: number, natGateways: number): number {
+export function estimateEksMonthlyCost(nodeCount: number, natGateways: number): CostEstimate {
   const controlPlaneUsd = EKS_CONTROL_PLANE_USD_PER_HOUR * HOURS_PER_MONTH;
   const nodesUsd = nodeCount * EKS_NODE_T3_MEDIUM_USD_PER_HOUR * HOURS_PER_MONTH;
   const rdsUsd = 2 * RDS_T3_SMALL_USD_PER_HOUR * HOURS_PER_MONTH; // catalog + orders, Multi-AZ (~2x single-AZ rate as a stand-in for the failover replica)
   const dynamoUsd = DYNAMODB_ON_DEMAND_USD_MONTHLY_BASELINE * 1.5; // + autoscaling headroom
   const cacheUsd = 2 * ELASTICACHE_T3_SMALL_USD_PER_HOUR * HOURS_PER_MONTH; // 2-node replication group
   const natUsd = natGateways * NAT_GATEWAY_USD_PER_HOUR * HOURS_PER_MONTH;
-  return Math.round(controlPlaneUsd + nodesUsd + rdsUsd + dynamoUsd + cacheUsd + natUsd);
+  return roundedBreakdown([
+    { label: "EKS control plane", usd: controlPlaneUsd },
+    { label: `Worker nodes (${nodeCount}x t3.medium)`, usd: nodesUsd },
+    { label: "RDS (catalog + orders, Multi-AZ)", usd: rdsUsd },
+    { label: "DynamoDB (cart, on-demand + headroom)", usd: dynamoUsd },
+    { label: "ElastiCache (checkout, 2-node replica group)", usd: cacheUsd },
+    { label: `NAT Gateway (${natGateways})`, usd: natUsd },
+  ]);
 }

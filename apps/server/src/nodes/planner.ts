@@ -130,7 +130,9 @@ function buildAwsOptions(planRequest: PlanRequest): CapacityPlanOption[] {
       "cache.t3.micro single node for checkout, 1 ALB + 1 NAT Gateway. Acceptable because staging carries no uptime SLA.",
     feasible: true,
     infeasibility_reason: null,
-    estimated_cost_usd_monthly: economyCost,
+    estimated_cost_usd_monthly: economyCost.totalUsdMonthly,
+    cost_breakdown: economyCost.breakdown,
+    cost_basis: "rate_table",
     headroom_pct: 0,
     availability_notes:
       "No failover on compute or any data store — a task, AZ, or instance restart causes a brief outage; fine for a demo/staging env.",
@@ -149,7 +151,9 @@ function buildAwsOptions(planRequest: PlanRequest): CapacityPlanOption[] {
       "than the economy tier but removes every single point of failure.",
     feasible: true,
     infeasibility_reason: null,
-    estimated_cost_usd_monthly: haCost,
+    estimated_cost_usd_monthly: haCost.totalUsdMonthly,
+    cost_breakdown: haCost.breakdown,
+    cost_basis: "rate_table",
     headroom_pct: 0.2,
     availability_notes: "Survives an AZ outage on every tier — DB, cache, and compute all have a standby.",
   };
@@ -189,6 +193,8 @@ function mockPlanner(planRequest: PlanRequest): CapacityPlan {
       feasible: false,
       infeasibility_reason: `${rps} rps exceeds sandbox limit of ${HARD_CAP_RPS} rps`,
       estimated_cost_usd_monthly: 0,
+      cost_breakdown: [],
+      cost_basis: "rate_table",
       headroom_pct: 0,
       availability_notes: "not deployable in this sandbox",
     };
@@ -300,6 +306,7 @@ function mockPlanner(planRequest: PlanRequest): CapacityPlan {
       reasons.push("Nginx load balancer added automatically because replicas > 1 for an HTTP service.");
     }
 
+    const cost = estimateMonthlyCost(services, storage);
     return {
       tier: cfg.tier,
       services,
@@ -308,7 +315,9 @@ function mockPlanner(planRequest: PlanRequest): CapacityPlan {
       reasoning: reasons.join(" "),
       feasible: true,
       infeasibility_reason: null,
-      estimated_cost_usd_monthly: estimateMonthlyCost(services, storage),
+      estimated_cost_usd_monthly: cost.totalUsdMonthly,
+      cost_breakdown: cost.breakdown,
+      cost_basis: "rate_table",
       headroom_pct: cfg.headroomPct,
       availability_notes: availabilityNotes,
     };

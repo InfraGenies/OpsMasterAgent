@@ -94,6 +94,25 @@ export type StorageSpec = z.infer<typeof StorageSpecSchema>;
 export const TierSchema = z.enum(["economy", "balanced", "high_availability"]);
 export type Tier = z.infer<typeof TierSchema>;
 
+/** One dollar-figure component of a plan's total (e.g. "Compute (Fargate)", "RDS", "NAT Gateway"). */
+export const CostLineItemSchema = z.object({
+  label: z.string(),
+  usd_monthly: z.number(),
+});
+export type CostLineItem = z.infer<typeof CostLineItemSchema>;
+
+/**
+ * Where estimated_cost_usd_monthly came from, surfaced to the UI so users
+ * don't mistake either kind for a live cloud billing quote:
+ * "rate_table" = summed deterministically from pricing/awsRateTable.ts or
+ * pricing/rateTable.ts (mock-LLM planner paths) and cost_breakdown is always
+ * populated and exactly sums to the total; "llm_estimate" = whatever number
+ * the model returned in its JSON response (real-LLM planner paths), where
+ * cost_breakdown is empty because the model isn't asked to itemize it.
+ */
+export const CostBasisSchema = z.enum(["rate_table", "llm_estimate"]);
+export type CostBasis = z.infer<typeof CostBasisSchema>;
+
 export const CapacityPlanOptionSchema = z.object({
   tier: TierSchema,
   services: z.array(ServiceSpecSchema),
@@ -106,6 +125,8 @@ export const CapacityPlanOptionSchema = z.object({
   feasible: z.boolean(),
   infeasibility_reason: z.string().nullable(),
   estimated_cost_usd_monthly: z.number(),
+  cost_breakdown: z.array(CostLineItemSchema).default([]),
+  cost_basis: CostBasisSchema.default("llm_estimate"),
   headroom_pct: z.number(),
   availability_notes: z.string(),
 });

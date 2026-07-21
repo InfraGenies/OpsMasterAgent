@@ -30,22 +30,27 @@ agent-md-files/  Original spec — source of truth for prompts, sizing rules, co
 npm start
 ```
 
-Or double-click / run `.\start-app.ps1` directly. This one command: checks Node.js is installed (18+),
-warns (non-fatally) if Docker isn't, runs `npm install` if `node_modules` is missing, builds
-`@ops-master/shared`, creates a working `apps/server/.env` in mock mode if none exists yet, then starts
-both the server (`:4100`) and web UI (`:5173`) in the background and opens your browser once the server
-reports healthy. **No API keys or Supabase project required to get a running app** — everything works in
-mock/local-store mode out of the box; fill in real keys in `apps/server/.env` whenever you're ready (see
-below), no need to re-run the script.
+Or double-click **`start-app.cmd`** (Explorer opens `.ps1` files in Notepad by default, not PowerShell —
+`start-app.cmd` is a thin wrapper that actually runs `start-app.ps1`, with `-ExecutionPolicy Bypass` so it
+works even on a machine that has never touched PowerShell's script-execution policy before). Either way,
+this one command: checks Node.js is installed (18+), warns (non-fatally) if Docker isn't, runs
+`npm install` if `node_modules` is missing, builds `@ops-master/shared`, creates a working
+`apps/server/.env` in mock mode if none exists yet, then starts both the server (`:4100`) and web UI
+(`:5173`) in the background and opens your browser once the server reports healthy. **No API keys or
+Supabase project required to get a running app** — everything works in mock/local-store mode out of the
+box; fill in real keys in `apps/server/.env` whenever you're ready (see below), no need to re-run the
+script. This is the full, verified path for someone cloning the repo for the first time — no prior
+`node_modules`/`.env`/build required.
 
 ```powershell
 npm stop
 ```
 
-Or `.\stop-app.ps1` — stops both processes (and their child processes; `npm`/`tsx`/`vite` fan out into
-several node processes on Windows, so this kills the whole tree via `taskkill /T`, not just the top PID),
-and as a fallback frees ports 4100/5173 if anything's still bound to them. Safe to run `npm start` again
-any time — it stops any previous instance first. Logs land in `.run/server.log` and `.run/web.log`.
+Or double-click **`stop-app.cmd`** / run `.\stop-app.ps1` — stops both processes (and their child
+processes; `npm`/`tsx`/`vite` fan out into several node processes on Windows, so this kills the whole tree
+via `taskkill /T`, not just the top PID), and as a fallback frees ports 4100/5173 if anything's still bound
+to them. Safe to run `npm start` again any time — it stops any previous instance first. Logs land in
+`.run/server.log` and `.run/web.log`.
 
 ### Manual setup (any OS)
 

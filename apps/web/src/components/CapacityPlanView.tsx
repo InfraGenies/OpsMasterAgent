@@ -1,9 +1,15 @@
-import type { CapacityPlan, Tier } from "@ops-master/shared";
+import type { CapacityPlan, CostBasis, Tier } from "@ops-master/shared";
 
 const TIER_LABEL: Record<Tier, string> = {
   economy: "Economy",
   balanced: "Balanced",
   high_availability: "High Availability",
+};
+
+/** Provenance labels so users don't mistake either kind of number for a live cloud billing quote. */
+const COST_BASIS_LABEL: Record<CostBasis, string> = {
+  rate_table: "Estimate — computed from a local rate table, not live cloud pricing",
+  llm_estimate: "Estimate — model-computed, not verified against a rate table",
 };
 
 export function CapacityPlanView({
@@ -47,10 +53,11 @@ export function CapacityPlanView({
                   </span>
                 )}
               </div>
-              <div className="text-xl font-bold text-slate-100 mt-1">
+              <div className="text-xl font-bold text-slate-100 mt-1" title={COST_BASIS_LABEL[opt.cost_basis]}>
                 ${opt.estimated_cost_usd_monthly}
                 <span className="text-xs font-normal text-slate-400">/mo est.</span>
               </div>
+              <div className="text-[10px] text-slate-500 mt-0.5">{COST_BASIS_LABEL[opt.cost_basis]}</div>
               <div className="text-xs text-slate-400 mt-1">{opt.availability_notes}</div>
               {opt.headroom_pct > 0 && (
                 <div className="text-xs text-slate-500 mt-0.5">{Math.round(opt.headroom_pct * 100)}% burst headroom</div>
@@ -64,6 +71,36 @@ export function CapacityPlanView({
       {activeOption && (
         <div className="space-y-3">
           <p className="text-sm text-slate-300 leading-relaxed">{activeOption.reasoning}</p>
+
+          <div className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-300">Cost breakdown</span>
+              <span className="text-[10px] text-slate-500">{COST_BASIS_LABEL[activeOption.cost_basis]}</span>
+            </div>
+            {activeOption.cost_breakdown.length > 0 ? (
+              <table className="w-full text-xs mt-2 border-collapse">
+                <tbody>
+                  {activeOption.cost_breakdown.map((item) => (
+                    <tr key={item.label} className="border-b border-slate-900 last:border-0">
+                      <td className="py-1 pr-4 text-slate-400">{item.label}</td>
+                      <td className="py-1 text-right text-slate-200 tabular-nums">${item.usd_monthly}/mo</td>
+                    </tr>
+                  ))}
+                  <tr>
+                    <td className="py-1 pr-4 font-semibold text-slate-100">Total</td>
+                    <td className="py-1 text-right font-semibold text-slate-100 tabular-nums">
+                      ${activeOption.estimated_cost_usd_monthly}/mo
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            ) : (
+              <p className="text-xs text-slate-500 mt-2">
+                No line-item breakdown available — this total was returned as a single figure, not itemized.
+              </p>
+            )}
+          </div>
+
           <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse">
               <thead>
