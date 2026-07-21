@@ -1,11 +1,11 @@
 # Agent 3 — IaC Generator
 
-**Owner:** Ravikumar (prompting) + Anshul (templates) · **LLM:** yes (fills templates ONLY) · **Executes commands:** never
+**Owner:** InfraGenies · **LLM:** yes (fills templates ONLY) · **Executes commands:** never
 
 ## Role
 Turn a `CapacityPlan` into an `IaCPayload` by **filling pre-approved templates** — the LLM chooses a template and supplies parameters; it never free-writes infrastructure code or shell commands. This constraint IS the responsible-AI story.
 
-## Vetted template library (Anshul authors, checked into `templates/`)
+## Vetted template library (InfraGenies authors, checked into `templates/`)
 
 | template_id | Format | Covers |
 |---|---|---|
@@ -17,7 +17,7 @@ Turn a `CapacityPlan` into an `IaCPayload` by **filling pre-approved templates**
 | `tf-localstack-web-db-v1` | terraform | same as web-db but via LocalStack AWS resources |
 | `k8s-manifests-v1` | k8s | deployment + service + HPA per service (UC-6, stretch) |
 
-Templates are Jinja2 with typed variables (`{{ services }}`, `{{ volumes }}`, ...). Adding a scenario = Anshul adds a template, never a prompt change.
+Templates are Jinja2 with typed variables (`{{ services }}`, `{{ volumes }}`, ...). Adding a scenario = InfraGenies adds a template, never a prompt change.
 
 ## System prompt
 
@@ -49,6 +49,6 @@ Rules:
 - Run static validation before the approval gate: `docker compose config -q` / `terraform validate` — a payload that fails validation never reaches the human.
 - Generate secrets, write `.env` (git-ignored).
 
-## Tests (Anirudha)
+## Tests (InfraGenies)
 - All 7 UC plans render to valid, `config -q`-clean files.
 - LLM asked for an unsupported topology (e.g., Kafka) returns `no_template`, not invented YAML.

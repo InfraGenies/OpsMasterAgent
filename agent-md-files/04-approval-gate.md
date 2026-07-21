@@ -1,6 +1,6 @@
 # Agent 4 — Human Approval Gate
 
-**Owner:** Anshul (UI) + Ravikumar (interrupt wiring) · **LLM:** none — this node is human-only by design.
+**Owner:** InfraGenies · **LLM:** none — this node is human-only by design.
 
 ## Role
 Hard stop before any deployment. The graph pauses (`interrupt_before=["deploy"]`), the UI presents everything a reviewer needs, and only an explicit human action resumes execution.
@@ -21,7 +21,7 @@ Hard stop before any deployment. The graph pauses (`interrupt_before=["deploy"]`
 ## Demo choreography
 This is the money moment. Pause here, read the reasoning aloud, point at the diff, click Approve, and let the room watch containers come up. For UC-8's refusal variant, this gate is never even reached — highlight that in the audit timeline.
 
-## Tests (Anirudha)
+## Tests (InfraGenies)
 - Kill the backend while a run awaits approval → restart → run resumes at the gate with state intact.
 - Reject with comment "use 3 replicas" → planner's next plan reflects the comment.
 - Verify there is no API route or code path that reaches `deploy` without a decision row in the audit DB.

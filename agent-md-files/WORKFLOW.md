@@ -118,7 +118,7 @@ User NL request
 
 ## The two safety rules (repeat these to judges)
 
-1. **LLM never writes shell commands.** It fills parameters in Terraform/compose *templates* authored and vetted by Anshul. The deploy agent's executor has a hard allow-list (`docker compose up/down`, `terraform apply/destroy`, `kubectl apply`).
+1. **LLM never writes shell commands.** It fills parameters in Terraform/compose *templates* authored and vetted by InfraGenies. The deploy agent's executor has a hard allow-list (`docker compose up/down`, `terraform apply/destroy`, `kubectl apply`).
 2. **Nothing deploys without a human click.** LangGraph `interrupt()` pauses the graph at node 4; state is checkpointed to SQLite, so approval can even happen after a restart.
 
 ## Data contracts

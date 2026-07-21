@@ -13,14 +13,14 @@ ops-master-agent/
 ├── contracts/
 │   └── CONTRACTS.md     ← the 4 JSON contracts — FREEZE THESE ON DAY 1
 └── agents/
-    ├── 00-orchestrator.md   (Ravikumar — LangGraph graph, code not prompt)
-    ├── 01-intake.md         (Ravikumar — NL → PlanRequest, safety filter)
-    ├── 02-planner.md        (Ravikumar + Anshul — capacity plan + sizing rules)
-    ├── 03-iac-generator.md  (Ravikumar + Anshul — template filling, never free-writing)
-    ├── 04-approval-gate.md  (Anshul + Ravikumar — human-only hard stop)
-    ├── 05-deploy-agent.md   (Aparna — allow-listed executor + rollback)
-    ├── 06-verify-agent.md   (Anirudha — health checks + k6 smoke)
-    └── 07-audit-store.md    (Ravikumar + Anshul — SQLite audit/state + DB decision)
+    ├── 00-orchestrator.md   (InfraGenies — LangGraph graph, code not prompt)
+    ├── 01-intake.md         (InfraGenies — NL → PlanRequest, safety filter)
+    ├── 02-planner.md        (InfraGenies — capacity plan + sizing rules)
+    ├── 03-iac-generator.md  (InfraGenies — template filling, never free-writing)
+    ├── 04-approval-gate.md  (InfraGenies — human-only hard stop)
+    ├── 05-deploy-agent.md   (InfraGenies — allow-listed executor + rollback)
+    ├── 06-verify-agent.md   (InfraGenies — health checks + k6 smoke)
+    └── 07-audit-store.md    (InfraGenies — SQLite audit/state + DB decision)
 ```
 
 ## How to use these files in VS Code
@@ -37,9 +37,9 @@ ops-master-agent/
 
 ## Build order (maps to the guide's Day plan)
 
-1. **Day 1–2:** Freeze `contracts/CONTRACTS.md`. Scaffold graph from `00-orchestrator.md` with stubbed nodes. Anshul writes `compose-single-v1` + `compose-web-db-v1` templates. File the Docker Desktop IS ticket (see INSTALLATION.md §0).
+1. **Day 1–2:** Freeze `contracts/CONTRACTS.md`. Scaffold graph from `00-orchestrator.md` with stubbed nodes. InfraGenies writes `compose-single-v1` + `compose-web-db-v1` templates. File the Docker Desktop IS ticket (see INSTALLATION.md §0).
 2. **Day 3–5:** Intake + Planner producing signed-off plans for UC-1/2/3. IaC generator filling templates, `docker compose config -q` clean.
-3. **Day 6–8:** Deploy executor + rollback (Aparna). Verify suite (Anirudha). UC-1 green end-to-end from CLI.
+3. **Day 6–8:** Deploy executor + rollback (InfraGenies). Verify suite (InfraGenies). UC-1 green end-to-end from CLI.
 4. **Day 9–11:** React chat + pipeline progress + approval gate UI + audit timeline.
 5. **Day 12+:** UC-7 (modify) + UC-8 (refusal/rollback) + rehearse.
 

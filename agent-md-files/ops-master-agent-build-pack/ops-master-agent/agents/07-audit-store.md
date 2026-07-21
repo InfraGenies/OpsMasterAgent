@@ -1,6 +1,6 @@
 # Component 7 — Audit Store & Reporting
 
-**Owner:** Ravikumar (schema) + Anshul (timeline UI) · **LLM:** report narrative only
+**Owner:** InfraGenies · **LLM:** report narrative only
 
 ## Do we need a database? — Decision
 
@@ -42,5 +42,5 @@ CREATE TABLE environments (
 - Store full prompt/response JSON (synthetic data only, so no privacy concern) — judges love clicking into "what did the AI actually say".
 - The final **Deployment Report** = LLM narrative over (`runs` + `audit_events` + `VerifyReport`), rendered in UI with a timeline component and exportable as Markdown.
 
-## Timeline UI (Anshul)
+## Timeline UI (InfraGenies)
 Vertical timeline per run: node icon, timestamp, duration, actor badge (🤖/🧑), expandable raw JSON, red/green status. This single screen is the governance story — keep it on screen during the whole demo.

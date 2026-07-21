@@ -1,6 +1,6 @@
 # Installation & Environment Setup (Windows) — Ops Master Agent
 
-Owner: Anshul + Aparna · File the Docker Desktop IS request on **Day 1** — it is the long pole.
+Owner: InfraGenies · File the Docker Desktop IS request on **Day 1** — it is the long pole.
 
 ---
 

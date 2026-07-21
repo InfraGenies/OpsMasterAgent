@@ -1,9 +1,9 @@
 # Agent 2 — Capacity Planner
 
-**Owner:** Ravikumar (prompts) + Anshul (sizing rules review) · **LLM:** yes · **Executes commands:** never
+**Owner:** InfraGenies · **LLM:** yes · **Executes commands:** never
 
 ## Role
-Turn a `PlanRequest` into a `CapacityPlan`: services, images, CPU/memory, replicas, storage, network — **with reasoning shown**. The visible reasoning grounded in real sizing rules is the team's differentiator; Anshul reviews every rule for realism.
+Turn a `PlanRequest` into a `CapacityPlan`: services, images, CPU/memory, replicas, storage, network — **with reasoning shown**. The visible reasoning grounded in real sizing rules is the team's differentiator; InfraGenies reviews every rule for realism.
 
 ## Input → Output
 `PlanRequest` → `CapacityPlan` (`contracts/CONTRACTS.md` §2) — as of the multi-tier revision, a
@@ -68,6 +68,6 @@ Each tier's reasoning must be 3-6 sentences, plain business English, showing the
 - UC-9 (AWS target): see `USE_CASES.md` UC-9 for the AWS-specific 2-tier (economy/high_availability
   only, no balanced) managed-service variant of this same contract.
 
-## Tests (Anirudha)
-- 3 sample requests → Anshul signs off each plan as "what I'd actually do".
+## Tests (InfraGenies)
+- 3 sample requests → InfraGenies signs off each plan as "what I'd actually do".
 - Memory sum never exceeds the constraint; replica formula exact for rps ∈ {50, 200, 500, 900, 2000, 50000}.

@@ -99,7 +99,7 @@ Common prep: `pip install terraform-local` (gives `tflocal`, auto-points provide
 
 - **Repos:** https://github.com/localstack/localstack-terraform-samples (primary — lift the `apigateway-lambda-dynamodb` style sample) · https://github.com/aws-samples/serverless-patterns (backup pattern source)
 - **NL request:** "Provision a serverless REST API on AWS with API Gateway, a Lambda function and a DynamoDB table for a staging test."
-- **Template:** `tf-localstack-serverless-v1` (new — Anshul lifts from the LocalStack sample, parameterises table/function names)
+- **Template:** `tf-localstack-serverless-v1` (new — InfraGenies lifts from the LocalStack sample, parameterises table/function names)
 - **Apply:** `tflocal init -input=false && tflocal apply -auto-approve -input=false` · **Rollback:** `tflocal destroy -auto-approve -input=false`
 - **Verify:** invoke the API Gateway URL on :4566 → 200 · `awslocal dynamodb scan --table-name <t>` returns the written item
 - **Why:** shows the same pipeline emitting **Terraform for AWS resources**, zero cloud cost — the "target-agnostic" proof

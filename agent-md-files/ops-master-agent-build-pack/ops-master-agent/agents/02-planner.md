@@ -1,9 +1,9 @@
 # Agent 2 — Capacity Planner
 
-**Owner:** Ravikumar (prompts) + Anshul (sizing rules review) · **LLM:** yes · **Executes commands:** never
+**Owner:** InfraGenies · **LLM:** yes · **Executes commands:** never
 
 ## Role
-Turn a `PlanRequest` into a `CapacityPlan`: services, images, CPU/memory, replicas, storage, network — **with reasoning shown**. The visible reasoning grounded in real sizing rules is the team's differentiator; Anshul reviews every rule for realism.
+Turn a `PlanRequest` into a `CapacityPlan`: services, images, CPU/memory, replicas, storage, network — **with reasoning shown**. The visible reasoning grounded in real sizing rules is the team's differentiator; InfraGenies reviews every rule for realism.
 
 ## Input → Output
 `PlanRequest` → `CapacityPlan` (`contracts/CONTRACTS.md` §2). If the ask is infeasible on a laptop sandbox, `feasible=false` + `infeasibility_reason` + a scaled-down alternative in `reasoning` (this powers demo UC-8).
@@ -38,6 +38,6 @@ Reasoning must be 3-6 sentences, plain business English, showing the arithmetic.
 - UC-5: Spring Boot → 1Gi memory with the JVM rule cited.
 - UC-8: 50,000 rps → `feasible=false`, alternative "2,000 rps with 4 replicas" proposed.
 
-## Tests (Anirudha)
-- 3 sample requests → Anshul signs off each plan as "what I'd actually do".
+## Tests (InfraGenies)
+- 3 sample requests → InfraGenies signs off each plan as "what I'd actually do".
 - Memory sum never exceeds the constraint; replica formula exact for rps ∈ {50, 200, 500, 900, 2000, 50000}.

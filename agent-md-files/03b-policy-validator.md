@@ -1,6 +1,6 @@
 # Agent 3b — Policy & Security Validator
 
-**Owner:** Ravikumar · **LLM:** none — deterministic scan · **Executes commands:** never
+**Owner:** InfraGenies · **LLM:** none — deterministic scan · **Executes commands:** never
 
 **Status:** not in the original spec set (`01`–`07`); added post-hoc to close the "self-correction loop"
 gap described in `source_configuration/ops-master-agent-solution.md` §4, which had no backing

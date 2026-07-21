@@ -1,6 +1,6 @@
 # Agent 2b — Infrastructure Readiness Check
 
-**Owner:** Ravikumar · **LLM:** none — deterministic scan · **Executes commands:** read-only diagnostics only (`docker info`, `docker compose ps`) — never a mutating command, and never through the deploy allow-list, which exists specifically to gate commands built from `apply_command`/`rollback_command` strings
+**Owner:** InfraGenies · **LLM:** none — deterministic scan · **Executes commands:** read-only diagnostics only (`docker info`, `docker compose ps`) — never a mutating command, and never through the deploy allow-list, which exists specifically to gate commands built from `apply_command`/`rollback_command` strings
 
 **Status:** not in the original spec set (`01`–`07`); added post-hoc, same rationale as `03b-policy-validator.md`
 — `source_configuration/ops-master-agent-enhancements-proposal.md` §3 described this checkpoint with no
