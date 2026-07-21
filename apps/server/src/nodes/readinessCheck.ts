@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { statfs } from "node:fs/promises";
 import { createServer } from "node:net";
 import { promisify } from "node:util";
-import type { CapacityPlan, EnvironmentRecord, ReadinessCheckResult, ReadinessReport } from "@ops-master/shared";
+import type { CapacityPlanOption, EnvironmentRecord, ReadinessCheckResult, ReadinessReport } from "@ops-master/shared";
 import { env } from "../config.js";
 import { projectNameFor } from "../orchestrator/ids.js";
 import { appServices } from "../templates/types.js";
@@ -25,6 +25,25 @@ function isPortFree(port: number): Promise<boolean> {
     srv.once("listening", () => srv.close(() => resolve(true)));
     srv.listen(port, "127.0.0.1");
   });
+}
+
+function isAwsPlan(plan: CapacityPlanOption): boolean {
+  return plan.services.some((s) => s.managed_service);
+}
+
+/** UC-9 AWS/Terraform path — advisory only, mirrors checkDockerDaemon's skip-if-missing pattern. Never blocking: this sandbox only ever plans, so a missing CLI just means a SIMULATED plan later, not a broken request. */
+async function checkTerraformCli(): Promise<ReadinessCheckResult> {
+  try {
+    await execFileAsync("terraform", ["-version"], { timeout: 10000 });
+    return { name: "terraform_cli_reachable", status: "pass", detail: "terraform CLI reachable", blocking: false };
+  } catch {
+    return {
+      name: "terraform_cli_reachable",
+      status: "skipped",
+      detail: "terraform CLI not found on this machine — plan will run in simulated mode",
+      blocking: false,
+    };
+  }
 }
 
 async function checkDockerDaemon(): Promise<ReadinessCheckResult> {
@@ -50,8 +69,8 @@ async function checkDockerDaemon(): Promise<ReadinessCheckResult> {
 }
 
 async function checkHostPortsFree(
-  plan: CapacityPlan,
-  existingPlan: CapacityPlan | null,
+  plan: CapacityPlanOption,
+  existingPlan: CapacityPlanOption | null,
   demoPortConflict: boolean
 ): Promise<ReadinessCheckResult> {
   if (demoPortConflict) {
@@ -115,7 +134,7 @@ async function checkDiskSpace(): Promise<ReadinessCheckResult> {
   }
 }
 
-function checkTemplateTopology(plan: CapacityPlan): ReadinessCheckResult {
+function checkTemplateTopology(plan: CapacityPlanOption): ReadinessCheckResult {
   const appCount = appServices(plan).length;
   if (appCount !== 1) {
     return {
@@ -141,7 +160,7 @@ function checkTemplateTopology(plan: CapacityPlan): ReadinessCheckResult {
  */
 async function checkModifyDrift(
   existingEnvRecord: EnvironmentRecord | null,
-  existingPlan: CapacityPlan | null
+  existingPlan: CapacityPlanOption | null
 ): Promise<ReadinessCheckResult | null> {
   if (!existingEnvRecord || !existingPlan) return null;
   if (!(await isDockerAvailable())) {
@@ -194,18 +213,22 @@ async function checkModifyDrift(
 
 export interface ReadinessCheckInput {
   requestId: string;
-  plan: CapacityPlan;
-  existingPlan: CapacityPlan | null;
+  plan: CapacityPlanOption;
+  existingPlan: CapacityPlanOption | null;
   existingEnvRecord: EnvironmentRecord | null;
   demoPortConflict: boolean;
 }
 
 export async function runReadinessCheck(input: ReadinessCheckInput): Promise<ReadinessReport> {
+  const aws = isAwsPlan(input.plan);
   const checks: ReadinessCheckResult[] = [
-    await checkDockerDaemon(),
+    aws ? await checkTerraformCli() : await checkDockerDaemon(),
     await checkHostPortsFree(input.plan, input.existingPlan, input.demoPortConflict),
     await checkDiskSpace(),
-    checkTemplateTopology(input.plan),
+    // AWS's fixed 5-service topology is a known, deliberate shape (see
+    // iacGenerator.ts's mockIacGenerator AWS branch) — the single-app-service
+    // guard below only applies to the generic compose engine.
+    ...(aws ? [] : [checkTemplateTopology(input.plan)]),
   ];
 
   const driftCheck = await checkModifyDrift(input.existingEnvRecord, input.existingPlan);

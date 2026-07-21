@@ -1,18 +1,21 @@
 import path from "node:path";
 import type {
   CapacityPlan,
+  CapacityPlanOption,
   DecisionAction,
   EnvironmentRecord,
   IaCPayload,
   PlanRequest,
   PolicyReport,
+  Tier,
 } from "@ops-master/shared";
 import { env } from "../config.js";
 import { decodeSnapshot, encodeSnapshot } from "../nodes/envSnapshot.js";
 import { runDeploy } from "../nodes/deploy.js";
 import { runIacGenerator } from "../nodes/iacGenerator.js";
 import { runIntake } from "../nodes/intake.js";
-import { runPlanner } from "../nodes/planner.js";
+import { runPlanner, selectOption } from "../nodes/planner.js";
+import { estimateMonthlyCost } from "../pricing/rateTable.js";
 import { runPolicyValidator } from "../nodes/policyValidator.js";
 import { runReadinessCheck } from "../nodes/readinessCheck.js";
 import { runReport } from "../nodes/report.js";
@@ -41,16 +44,24 @@ async function findLatestUpEnvironment(store: AuditStore): Promise<EnvironmentRe
   return envs.length ? envs[envs.length - 1] : null;
 }
 
-async function resolveExistingEnv(
-  store: AuditStore,
-  planRequest: PlanRequest
-): Promise<{ envId: string; capacityPlan: CapacityPlan; files: IaCPayload["files"] } | null> {
+interface ExistingEnv {
+  envId: string;
+  capacityPlan: CapacityPlanOption;
+  files: IaCPayload["files"];
+}
+
+async function resolveExistingEnv(store: AuditStore, planRequest: PlanRequest): Promise<ExistingEnv | null> {
   const envId = planRequest.existing_env_id ?? (await findLatestUpEnvironment(store))?.env_id ?? null;
   if (!envId) return null;
   const record = await store.getEnvironment(envId);
   if (!record) return null;
   const snap = decodeSnapshot(record);
   return { envId, capacityPlan: snap.capacity_plan, files: snap.files };
+}
+
+/** modify-flow inputs to the planner/merge need a full multi-tier CapacityPlan, but an environment snapshot only ever stores the one tier that's actually deployed — wrap it as a single-option plan so mergeCapacityPlan has something to merge each delta tier onto. */
+function wrapAsSingleOptionPlan(option: CapacityPlanOption, requestId: string): CapacityPlan {
+  return { request_id: requestId, options: [option], recommended_tier: option.tier, feasible: true, infeasibility_reason: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -180,10 +191,16 @@ export async function rehydratePendingApprovals(): Promise<void> {
 async function reachApprovalGate(
   requestId: string,
   planRequest: PlanRequest,
-  plan: CapacityPlan,
-  existing: { envId: string; capacityPlan: CapacityPlan; files: IaCPayload["files"] } | null
+  fullPlan: CapacityPlan,
+  existing: ExistingEnv | null
 ): Promise<void> {
   const store = getStore();
+  // fullPlan.recommended_tier doubles as "currently selected tier" — the
+  // agent's initial pick, or the human's after a tier-switch edit (see
+  // applyCapacityPlanPatch). Only this one tier's flat plan flows through
+  // readiness/iac/policy below; all options still ride along in fullPlan for
+  // the approval-gate comparison UI.
+  const plan = selectOption(fullPlan, fullPlan.recommended_tier);
 
   // readiness_check (02b-readiness-check.md): deterministic pre-flight scan,
   // runs before a single LLM call is spent on iac_generator. Refuses the run
@@ -294,7 +311,7 @@ async function reachApprovalGate(
     status: "pending",
     detail: "awaiting human decision",
   });
-  broadcastEvent("awaiting_approval", requestId, "approval_gate", { plan, iac: iacValue, policy: policyReport });
+  broadcastEvent("awaiting_approval", requestId, "approval_gate", { plan: fullPlan, iac: iacValue, policy: policyReport });
   scheduleApprovalTimeout(requestId);
 }
 
@@ -320,7 +337,7 @@ async function runIntakeThroughGate(requestId: string, rawText: string, existing
   }
   const planRequest = intakeResult.value;
 
-  let existing: { envId: string; capacityPlan: CapacityPlan; files: IaCPayload["files"] } | null = null;
+  let existing: ExistingEnv | null = null;
   if (planRequest.operation === "modify") {
     existing = await resolveExistingEnv(store, planRequest);
     if (!existing) {
@@ -330,7 +347,8 @@ async function runIntakeThroughGate(requestId: string, rawText: string, existing
   }
 
   broadcastEvent("node_started", requestId, "planner");
-  const plannerResult = await runPlanner(planRequest, existing?.capacityPlan ?? null);
+  const existingFullPlan = existing ? wrapAsSingleOptionPlan(existing.capacityPlan, requestId) : null;
+  const plannerResult = await runPlanner(planRequest, existingFullPlan);
   await logAudit(store, {
     request_id: requestId,
     node: "planner",
@@ -343,7 +361,8 @@ async function runIntakeThroughGate(requestId: string, rawText: string, existing
   broadcastEvent("node_finished", requestId, "planner", plannerResult.value);
 
   if (!plannerResult.value.feasible) {
-    await refuseRun(requestId, plannerResult.value.infeasibility_reason ?? "plan infeasible", plannerResult.value.reasoning);
+    const fallback = selectOption(plannerResult.value);
+    await refuseRun(requestId, plannerResult.value.infeasibility_reason ?? "plan infeasible", fallback.reasoning);
     return;
   }
 
@@ -375,16 +394,31 @@ export async function startRun(rawText: string, existingEnvId: string | null): P
 // Phase 2: human decision -> rework (reject/edit) or deploy->verify->report (approve)
 // ---------------------------------------------------------------------------
 
-function applyCapacityPlanPatch(plan: CapacityPlan, patch: Record<string, unknown>): CapacityPlan {
+/** Human edits at the approval gate: switch which tier is selected, and/or override replicas/memory/cpu on specific services within the currently-selected tier. */
+function applyCapacityPlanPatch(fullPlan: CapacityPlan, patch: Record<string, unknown>): CapacityPlan {
+  let plan = fullPlan;
+
+  const selectedTier = typeof patch.selected_tier === "string" ? (patch.selected_tier as Tier) : undefined;
+  if (selectedTier && plan.options.some((o) => o.tier === selectedTier)) {
+    plan = { ...plan, recommended_tier: selectedTier };
+  }
+
   const patchServices = patch.services as
     | Array<{ name: string; replicas?: number; memory?: string; cpu?: string }>
     | undefined;
-  if (!patchServices?.length) return plan;
-  const services = plan.services.map((s) => {
-    const p = patchServices.find((x) => x.name === s.name);
-    return p ? { ...s, replicas: p.replicas ?? s.replicas, memory: p.memory ?? s.memory, cpu: p.cpu ?? s.cpu } : s;
-  });
-  return { ...plan, services };
+  if (patchServices?.length) {
+    const options = plan.options.map((opt) => {
+      if (opt.tier !== plan.recommended_tier) return opt;
+      const services = opt.services.map((s) => {
+        const p = patchServices.find((x) => x.name === s.name);
+        return p ? { ...s, replicas: p.replicas ?? s.replicas, memory: p.memory ?? s.memory, cpu: p.cpu ?? s.cpu } : s;
+      });
+      return { ...opt, services, estimated_cost_usd_monthly: estimateMonthlyCost(services, opt.storage) };
+    });
+    plan = { ...plan, options };
+  }
+
+  return plan;
 }
 
 async function reworkPlan(
@@ -400,7 +434,7 @@ async function reworkPlan(
     return;
   }
 
-  let existing: { envId: string; capacityPlan: CapacityPlan; files: IaCPayload["files"] } | null = null;
+  let existing: ExistingEnv | null = null;
   if (planRequest.operation === "modify") existing = await resolveExistingEnv(store, planRequest);
 
   let plan: CapacityPlan;
@@ -416,13 +450,14 @@ async function reworkPlan(
       node: "planner",
       actor: "human",
       status: "success",
-      detail: "human edit applied directly to capacity plan (replicas/memory/cpu)",
+      detail: "human edit applied directly to capacity plan (tier selection and/or replicas/memory/cpu)",
       output: plan,
     });
     broadcastEvent("node_finished", requestId, "planner", plan);
   } else {
     broadcastEvent("node_started", requestId, "planner");
-    const plannerResult = await runPlanner(planRequest, existing?.capacityPlan ?? null, comment ?? undefined);
+    const existingFullPlan = existing ? wrapAsSingleOptionPlan(existing.capacityPlan, requestId) : null;
+    const plannerResult = await runPlanner(planRequest, existingFullPlan, comment ?? undefined);
     await logAudit(store, {
       request_id: requestId,
       node: "planner",
@@ -434,7 +469,8 @@ async function reworkPlan(
     });
     broadcastEvent("node_finished", requestId, "planner", plannerResult.value);
     if (!plannerResult.value.feasible) {
-      await refuseRun(requestId, plannerResult.value.infeasibility_reason ?? "plan infeasible", plannerResult.value.reasoning);
+      const fallback = selectOption(plannerResult.value);
+      await refuseRun(requestId, plannerResult.value.infeasibility_reason ?? "plan infeasible", fallback.reasoning);
       return;
     }
     plan = plannerResult.value;
@@ -446,12 +482,13 @@ async function reworkPlan(
 async function runDeployThroughReport(requestId: string): Promise<void> {
   const store = getStore();
   const planRequest = await loadLatestNodeOutput<PlanRequest>(store, requestId, "intake");
-  const plan = await loadLatestNodeOutput<CapacityPlan>(store, requestId, "planner");
+  const fullPlan = await loadLatestNodeOutput<CapacityPlan>(store, requestId, "planner");
   const payload = await loadLatestNodeOutput<IaCPayload>(store, requestId, "iac_generator");
-  if (!planRequest || !plan || !payload) {
+  if (!planRequest || !fullPlan || !payload) {
     await refuseRun(requestId, "internal error: lost pipeline state before deploy");
     return;
   }
+  const plan = selectOption(fullPlan, fullPlan.recommended_tier);
 
   const deploymentDir = deploymentDirFor(requestId);
 
@@ -487,6 +524,7 @@ async function runDeployThroughReport(requestId: string): Promise<void> {
     targetRps: planRequest.expected_load.rps,
     onLog: (line) => broadcastEvent("log_line", requestId, "verify", line),
     forceFail: /\b(demo-fail|wrong (db )?password)\b/i.test(planRequest.raw_text),
+    terraformDeployDetail: payload.format === "terraform" ? deployOutcome.detail : undefined,
   });
   await logAudit(store, {
     request_id: requestId,

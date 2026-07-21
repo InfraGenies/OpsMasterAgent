@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { env } from "./config.js";
+import { activeProviderName, isMockMode } from "./llm/client.js";
 import { HttpError } from "./orchestrator/errors.js";
 import { rehydratePendingApprovals } from "./orchestrator/pipeline.js";
 import { runsRouter } from "./routes/runs.js";
@@ -13,7 +14,7 @@ app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, mockLlm: env.MOCK_LLM || !env.ANTHROPIC_API_KEY });
+  res.json({ ok: true, mockLlm: isMockMode(), llmProvider: activeProviderName() });
 });
 
 app.use("/api/runs", runsRouter);

@@ -1,4 +1,4 @@
-import type { CapacityPlan, IaCFile, TemplateId } from "@ops-master/shared";
+import type { CapacityPlanOption, IaCFile, IaCPayload, TemplateId } from "@ops-master/shared";
 
 export interface RenderContext {
   requestId: string;
@@ -14,10 +14,10 @@ export interface RenderResult {
 
 export interface TemplateDefinition {
   id: TemplateId;
-  format: "compose";
+  format: IaCPayload["format"];
   description: string;
   /** Which CapacityPlan services this template expects, for a friendly no_template-style error. */
-  render(plan: CapacityPlan, variables: Record<string, unknown>, ctx: RenderContext): RenderResult;
+  render(plan: CapacityPlanOption, variables: Record<string, unknown>, ctx: RenderContext): RenderResult;
 }
 
 export function isDbService(image: string): boolean {
@@ -32,20 +32,20 @@ export function isLbService(image: string): boolean {
   return image.startsWith("nginx");
 }
 
-export function appServices(plan: CapacityPlan) {
+export function appServices(plan: CapacityPlanOption) {
   return plan.services.filter(
     (s) => !isDbService(s.image) && !isCacheService(s.image) && !isLbService(s.image)
   );
 }
 
-export function dbService(plan: CapacityPlan) {
+export function dbService(plan: CapacityPlanOption) {
   return plan.services.find((s) => isDbService(s.image));
 }
 
-export function cacheService(plan: CapacityPlan) {
+export function cacheService(plan: CapacityPlanOption) {
   return plan.services.find((s) => isCacheService(s.image));
 }
 
-export function hostPortFor(plan: CapacityPlan, serviceName: string, fallback: number): number {
+export function hostPortFor(plan: CapacityPlanOption, serviceName: string, fallback: number): number {
   return plan.network.expose.find((e) => e.service === serviceName)?.host_port ?? fallback;
 }

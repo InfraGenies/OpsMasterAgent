@@ -1,19 +1,46 @@
-import { CapacityPlanSchema, type CapacityPlan, type PlanRequest } from "@ops-master/shared";
+import {
+  CapacityPlanSchema,
+  type CapacityPlan,
+  type CapacityPlanOption,
+  type PlanRequest,
+  type ServiceSpec,
+  type StorageSpec,
+  type Tier,
+} from "@ops-master/shared";
 import { loadPrompt } from "../llm/promptLoader.js";
 import { runLLMJson } from "../llm/runLLMJson.js";
+import { estimateEcsFargateMonthlyCost, estimateEksMonthlyCost } from "../pricing/awsRateTable.js";
+import { estimateMonthlyCost } from "../pricing/rateTable.js";
 import { checkSandboxLimits, mergeCapacityPlan } from "./planMerge.js";
 
 const SYSTEM_PROMPT = loadPrompt("02-planner.md");
 
 const SCHEMA_SHAPE = `{
   "request_id": "string",
-  "services": [{ "name": "string", "image": "string", "cpu": "string e.g. 1.0", "memory": "string e.g. 512Mi", "replicas": number, "ports": [number] }],
-  "storage": [{ "name": "string", "type": "volume", "size": "string e.g. 1Gi", "attached_to": "string, a service name" }],
-  "network": { "expose": [{ "service": "string", "host_port": number }], "internal": ["string, service names with no host port"] },
-  "reasoning": "3-6 sentences, plain business English, showing the arithmetic",
+  "options": [{
+    "tier": "economy" | "balanced" | "high_availability",
+    "services": [{ "name": "string", "image": "string", "cpu": "string e.g. 1.0", "memory": "string e.g. 512Mi", "replicas": number, "ports": [number], "managed_service": "rds" | "dynamodb" | "elasticache" | null, "multi_az": boolean }],
+    "storage": [{ "name": "string", "type": "volume", "size": "string e.g. 1Gi", "attached_to": "string, a service name" }],
+    "network": { "expose": [{ "service": "string", "host_port": number }], "internal": ["string, service names with no host port"] },
+    "reasoning": "3-6 sentences, plain business English, showing the arithmetic",
+    "feasible": boolean,
+    "infeasibility_reason": "string | null",
+    "estimated_cost_usd_monthly": number,
+    "headroom_pct": number,
+    "availability_notes": "string, one sentence on what does/doesn't survive a failure at this tier"
+  }],
+  "recommended_tier": "economy" | "balanced" | "high_availability",
   "feasible": boolean,
   "infeasibility_reason": "string | null"
 }`;
+
+const AWS_TARGET_NOTE =
+  "\n\nconstraints.target=\"aws\": produce exactly TWO options — \"economy\" (ECS Fargate, single-AZ, " +
+  "managed-service substitution: RDS for a MySQL/Postgres dependency, DynamoDB for a key-value/NoSQL " +
+  "dependency, ElastiCache for a Redis dependency, managed_service set accordingly, multi_az=false) and " +
+  "\"high_availability\" (EKS, Multi-AZ RDS/ElastiCache, multi_az=true, +1 replica per stateless service). " +
+  "No \"balanced\" tier for AWS. See agent-md-files/USE_CASES.md UC-9 for the exact worked example " +
+  "(retail-store-sample-app: ui/catalog/cart/orders/checkout) if the request matches it.";
 
 function buildUserPrompt(
   planRequest: PlanRequest,
@@ -22,39 +49,153 @@ function buildUserPrompt(
 ): string {
   const modifyNote =
     planRequest.operation === "modify" && existingPlan
-      ? `\n\nThis is a MODIFY of an already-running environment. Existing services (do not repeat unless a value is actually changing):\n${JSON.stringify(existingPlan.services, null, 2)}\n\nReturn ONLY the new/changed services, storage, and network entries as the delta — the backend merges this onto the existing plan.`
+      ? `\n\nThis is a MODIFY of an already-running environment. Existing plan (do not repeat unless a value is actually changing):\n${JSON.stringify(existingPlan.options, null, 2)}\n\nReturn ONLY the new/changed services, storage, and network entries as the delta per tier — the backend merges this onto the existing plan.`
       : "";
   const feedbackNote = humanFeedback
     ? `\n\nA human reviewer rejected the previous plan with this feedback — address it directly:\n"${humanFeedback}"`
     : "";
+  const awsNote = planRequest.constraints.target === "aws" ? AWS_TARGET_NOTE : "";
   return [
-    `PlanRequest:\n${JSON.stringify(planRequest, null, 2)}${modifyNote}${feedbackNote}`,
+    `PlanRequest:\n${JSON.stringify(planRequest, null, 2)}${modifyNote}${feedbackNote}${awsNote}`,
     `Respond with ONLY a JSON object matching exactly this shape:\n${SCHEMA_SHAPE}`,
   ].join("\n\n");
 }
 
-function ceilReplicas(rps: number, perInstance: number): number {
-  return Math.min(4, Math.max(1, Math.ceil(rps / perInstance)));
+function ceilReplicas(rps: number, perInstance: number, headroomPct: number, floor: number): number {
+  return Math.min(4, Math.max(floor, Math.ceil((rps * (1 + headroomPct)) / perInstance)));
 }
 
 const HARD_CAP_RPS = 2000;
 
+interface TierConfig {
+  tier: Tier;
+  headroomPct: number;
+  replicaFloor: number;
+  extraReplica: number;
+}
+
+function tierConfigs(isProd: boolean): TierConfig[] {
+  const haFloor = isProd ? 2 : 1;
+  return [
+    { tier: "economy", headroomPct: 0, replicaFloor: 1, extraReplica: 0 },
+    { tier: "balanced", headroomPct: 0.2, replicaFloor: haFloor, extraReplica: 0 },
+    { tier: "high_availability", headroomPct: 0.2, replicaFloor: haFloor, extraReplica: 1 },
+  ];
+}
+
+/**
+ * UC-9 worked example (agent-md-files/USE_CASES.md): AWS's own
+ * retail-store-sample-app, 5 services, each data dependency substituted for
+ * the AWS managed equivalent rather than a container. This is a deliberately
+ * fixed topology matching that repo's real service set, not a generic
+ * derivation from PlanRequest.dependencies — same "worked example" scope the
+ * docs describe.
+ */
+const RETAIL_APP_SERVICES: { name: string; lang: string; managed?: "rds" | "dynamodb" | "elasticache" }[] = [
+  { name: "ui", lang: "Java" },
+  { name: "catalog", lang: "Go", managed: "rds" },
+  { name: "cart", lang: "Java", managed: "dynamodb" },
+  { name: "orders", lang: "Java", managed: "rds" },
+  { name: "checkout", lang: "Node.js", managed: "elasticache" },
+];
+
+function buildAwsOptions(planRequest: PlanRequest): CapacityPlanOption[] {
+  function services(taskCount: number, cpu: string, memory: string, multiAz: boolean): ServiceSpec[] {
+    return RETAIL_APP_SERVICES.map((s) => ({
+      name: s.name,
+      image: `retail-store-sample-app/${s.name} (${s.lang}; image managed by the upstream terraform module)`,
+      cpu,
+      memory,
+      replicas: taskCount,
+      ports: [8080],
+      managed_service: s.managed ?? null,
+      multi_az: s.managed ? multiAz : undefined,
+    }));
+  }
+
+  const economyCost = estimateEcsFargateMonthlyCost(
+    RETAIL_APP_SERVICES.map(() => ({ vcpu: 0.25, gib: 0.5, taskCount: 1 })),
+    1
+  );
+  const haCost = estimateEksMonthlyCost(3, 2);
+
+  const economy: CapacityPlanOption = {
+    tier: "economy",
+    services: services(1, "0.25", "512Mi", false),
+    storage: [],
+    network: { expose: [], internal: [] },
+    reasoning:
+      "Staging traffic is low and this is cost-sensitive: one ECS Fargate task per service (0.25 vCPU / 0.5GB each) " +
+      "in a single AZ, RDS db.t3.micro for catalog and orders (single-AZ), DynamoDB on-demand for cart, ElastiCache " +
+      "cache.t3.micro single node for checkout, 1 ALB + 1 NAT Gateway. Acceptable because staging carries no uptime SLA.",
+    feasible: true,
+    infeasibility_reason: null,
+    estimated_cost_usd_monthly: economyCost,
+    headroom_pct: 0,
+    availability_notes:
+      "No failover on compute or any data store — a task, AZ, or instance restart causes a brief outage; fine for a demo/staging env.",
+  };
+
+  const highAvailability: CapacityPlanOption = {
+    tier: "high_availability",
+    services: services(2, "0.5", "1Gi", true),
+    storage: [],
+    network: { expose: [], internal: [] },
+    reasoning:
+      "If this needs to survive an AZ failure (a prod-adjacent staging or pre-prod gate): EKS with a managed control " +
+      "plane + 3x t3.medium worker nodes across 2 AZs (2 pod replicas per service), RDS db.t3.small Multi-AZ for " +
+      "catalog and orders, DynamoDB on-demand with autoscaling headroom for cart, ElastiCache cache.t3.small " +
+      "2-node replication group for checkout, 1 ALB + 2 NAT Gateways for multi-AZ egress. Costs roughly 2.9x more " +
+      "than the economy tier but removes every single point of failure.",
+    feasible: true,
+    infeasibility_reason: null,
+    estimated_cost_usd_monthly: haCost,
+    headroom_pct: 0.2,
+    availability_notes: "Survives an AZ outage on every tier — DB, cache, and compute all have a standby.",
+  };
+
+  void planRequest; // topology is fixed per the worked example; request only selects the AWS branch itself
+  return [economy, highAvailability];
+}
+
 function mockPlanner(planRequest: PlanRequest): CapacityPlan {
+  if (planRequest.constraints.target === "aws") {
+    return {
+      request_id: planRequest.request_id,
+      options: buildAwsOptions(planRequest),
+      recommended_tier: "economy",
+      feasible: true,
+      infeasibility_reason: null,
+    };
+  }
+
   const rawLower = planRequest.raw_text.toLowerCase();
+  const environmentLower = planRequest.environment.toLowerCase();
   // "~200 concurrent users/voters" with no rps stated -> rough rule of thumb
   // of 1 rps per 10 concurrent users (stated in reasoning when applied).
   const users = planRequest.expected_load.concurrent_users;
   const rps = planRequest.expected_load.rps ?? (users ? Math.max(10, Math.ceil(users / 10)) : 50);
 
   if (rps > HARD_CAP_RPS) {
-    return {
-      request_id: planRequest.request_id,
+    const fallbackReplicas = 4;
+    const infeasibleOption: CapacityPlanOption = {
+      tier: "economy",
       services: [],
       storage: [],
       network: { expose: [], internal: [] },
       reasoning:
         `Requested ${rps} rps exceeds the sandbox hard limit of ${HARD_CAP_RPS} rps on a single laptop. ` +
-        `Proposing a scaled-down alternative of ${HARD_CAP_RPS} rps with 4 replicas instead — the largest feasible footprint for a local sandbox.`,
+        `Proposing a scaled-down alternative of ${HARD_CAP_RPS} rps with ${fallbackReplicas} replicas instead — the largest feasible footprint for a local sandbox.`,
+      feasible: false,
+      infeasibility_reason: `${rps} rps exceeds sandbox limit of ${HARD_CAP_RPS} rps`,
+      estimated_cost_usd_monthly: 0,
+      headroom_pct: 0,
+      availability_notes: "not deployable in this sandbox",
+    };
+    return {
+      request_id: planRequest.request_id,
+      options: [infeasibleOption],
+      recommended_tier: "economy",
       feasible: false,
       infeasibility_reason: `${rps} rps exceeds sandbox limit of ${HARD_CAP_RPS} rps`,
     };
@@ -92,61 +233,94 @@ function mockPlanner(planRequest: PlanRequest): CapacityPlan {
     runtimeNote = "Uptime Kuma monitoring dashboard (single instance)";
   }
 
-  let replicas = ceilReplicas(rps, perInstance);
-  const reasons = [
-    `${runtimeNote} at ~${perInstance} rps/instance sustained -> replicas = ceil(${rps}/${perInstance}) = ${replicas}.`,
-  ];
-  if (planRequest.expected_load.rps === null && users) {
-    reasons.unshift(`~${users} concurrent users at ~1 rps per 10 users -> sizing for ~${rps} rps.`);
-  }
-
   // UC-4: an explicit replica count in the request is an instruction, not a
-  // sizing input — honor it (capped at the sandbox max of 4).
+  // sizing input — it overrides load-based sizing for every tier equally.
   const replicasHint = planRequest.raw_text.match(/(\d+)\s*replicas?\b/i);
-  if (replicasHint) {
-    replicas = Math.min(4, Math.max(1, Number(replicasHint[1])));
-    reasons.push(`Replica count ${replicas} set explicitly by the request (overrides load-based sizing).`);
+  const explicitReplicas = replicasHint ? Math.min(4, Math.max(1, Number(replicasHint[1]))) : null;
+
+  const isProd = environmentLower.includes("prod");
+  const hasDb = planRequest.dependencies.includes("postgresql") || planRequest.dependencies.includes("mysql");
+  const hasRedis = planRequest.dependencies.includes("redis");
+
+  function buildOption(cfg: TierConfig): CapacityPlanOption {
+    const replicas = explicitReplicas ?? Math.min(4, ceilReplicas(rps, perInstance, cfg.headroomPct, cfg.replicaFloor) + cfg.extraReplica);
+    const reasons: string[] = [];
+    if (planRequest.expected_load.rps === null && users) {
+      reasons.push(`~${users} concurrent users at ~1 rps per 10 users -> sizing for ~${rps} rps.`);
+    }
+    if (explicitReplicas !== null) {
+      reasons.push(`Replica count ${replicas} set explicitly by the request (overrides load-based sizing for every tier).`);
+    } else {
+      const headroomNote = cfg.headroomPct > 0 ? ` with ${Math.round(cfg.headroomPct * 100)}% burst headroom` : ", sized to exact stated load";
+      reasons.push(
+        `${runtimeNote} at ~${perInstance} rps/instance sustained${headroomNote} -> replicas = ${replicas} (${cfg.tier} tier).`
+      );
+      if (cfg.replicaFloor > 1) {
+        reasons.push(`Environment floor of ${cfg.replicaFloor} replicas applied (prod-adjacent, no single point of failure on the app tier).`);
+      }
+      if (cfg.extraReplica > 0) {
+        reasons.push(`+${cfg.extraReplica} replica over the balanced tier for high-availability headroom.`);
+      }
+    }
+
+    const services: ServiceSpec[] = [{ name: "app", image, cpu, memory, replicas, ports: [appPort] }];
+    const storage: StorageSpec[] = [];
+    if (appVolume) {
+      storage.push({ name: "appdata", type: "volume", size: "1Gi", attached_to: "app" });
+      reasons.push("Persistent 1Gi volume attached so monitor history survives restarts.");
+    }
+    const expose: CapacityPlanOption["network"]["expose"] = [{ service: "app", host_port: appPort }];
+    const internal: string[] = [];
+
+    let availabilityNotes = cfg.extraReplica > 0 ? `${replicas}x app replicas` : `${replicas}x app replica(s)`;
+
+    if (planRequest.dependencies.includes("postgresql")) {
+      services.push({ name: "db", image: "postgres:16-alpine", cpu: "1.0", memory: "1Gi", replicas: 1, ports: [5432] });
+      storage.push({ name: "dbdata", type: "volume", size: "1Gi", attached_to: "db" });
+      internal.push("db");
+      reasons.push("PostgreSQL sized at 1 instance / 1Gi with a named volume for data, never replicated in sandbox.");
+    } else if (planRequest.dependencies.includes("mysql")) {
+      services.push({ name: "db", image: "mysql:8", cpu: "1.0", memory: "1Gi", replicas: 1, ports: [3306] });
+      storage.push({ name: "dbdata", type: "volume", size: "1Gi", attached_to: "db" });
+      internal.push("db");
+      reasons.push("MySQL sized at 1 instance / 1Gi with a named volume for data, never replicated in sandbox.");
+    }
+    if (hasDb) {
+      availabilityNotes += cfg.tier === "economy" ? ", single-instance DB (no failover)" : ", single-instance DB (sandbox can't replicate stateful services — would be Multi-AZ on a real cloud target)";
+    }
+
+    if (planRequest.dependencies.includes("redis")) {
+      services.push({ name: "cache", image: "redis:7-alpine", cpu: "0.5", memory: "256Mi", replicas: 1, ports: [6379] });
+      internal.push("cache");
+      reasons.push("Redis sized at 1 instance / 256Mi, no volume (no persistence requested).");
+    }
+    if (hasRedis) availabilityNotes += ", single-instance cache";
+
+    if (replicas > 1) {
+      reasons.push("Nginx load balancer added automatically because replicas > 1 for an HTTP service.");
+    }
+
+    return {
+      tier: cfg.tier,
+      services,
+      storage,
+      network: { expose, internal },
+      reasoning: reasons.join(" "),
+      feasible: true,
+      infeasibility_reason: null,
+      estimated_cost_usd_monthly: estimateMonthlyCost(services, storage),
+      headroom_pct: cfg.headroomPct,
+      availability_notes: availabilityNotes,
+    };
   }
 
-  const services: CapacityPlan["services"] = [
-    { name: "app", image, cpu, memory, replicas, ports: [appPort] },
-  ];
-  const storage: CapacityPlan["storage"] = [];
-  if (appVolume) {
-    storage.push({ name: "appdata", type: "volume", size: "1Gi", attached_to: "app" });
-    reasons.push("Persistent 1Gi volume attached so monitor history survives restarts.");
-  }
-  const expose: CapacityPlan["network"]["expose"] = [{ service: "app", host_port: appPort }];
-  const internal: string[] = [];
-
-  if (planRequest.dependencies.includes("postgresql")) {
-    services.push({ name: "db", image: "postgres:16-alpine", cpu: "1.0", memory: "1Gi", replicas: 1, ports: [5432] });
-    storage.push({ name: "dbdata", type: "volume", size: "1Gi", attached_to: "db" });
-    internal.push("db");
-    reasons.push("PostgreSQL sized at 1 instance / 1Gi with a named volume for data, never replicated in sandbox.");
-  } else if (planRequest.dependencies.includes("mysql")) {
-    services.push({ name: "db", image: "mysql:8", cpu: "1.0", memory: "1Gi", replicas: 1, ports: [3306] });
-    storage.push({ name: "dbdata", type: "volume", size: "1Gi", attached_to: "db" });
-    internal.push("db");
-    reasons.push("MySQL sized at 1 instance / 1Gi with a named volume for data, never replicated in sandbox.");
-  }
-
-  if (planRequest.dependencies.includes("redis")) {
-    services.push({ name: "cache", image: "redis:7-alpine", cpu: "0.5", memory: "256Mi", replicas: 1, ports: [6379] });
-    internal.push("cache");
-    reasons.push("Redis sized at 1 instance / 256Mi, no volume (no persistence requested).");
-  }
-
-  if (replicas > 1) {
-    reasons.push("Nginx load balancer added automatically because replicas > 1 for an HTTP service.");
-  }
+  const options = tierConfigs(isProd).map(buildOption);
+  const recommended_tier: Tier = environmentLower.includes("dev") ? "economy" : "balanced";
 
   return {
     request_id: planRequest.request_id,
-    services,
-    storage,
-    network: { expose, internal },
-    reasoning: reasons.join(" "),
+    options,
+    recommended_tier,
     feasible: true,
     infeasibility_reason: null,
   };
@@ -170,12 +344,17 @@ export async function runPlanner(
     plan = mergeCapacityPlan(existingPlan, plan);
   }
 
-  if (plan.feasible) {
-    const limitCheck = checkSandboxLimits(plan, planRequest.constraints.max_memory_gb);
-    if (!limitCheck.feasible) {
-      plan = { ...plan, feasible: false, infeasibility_reason: limitCheck.reason };
-    }
+  // Sandbox memory/replica caps model this laptop's resources — meaningless
+  // for an AWS target, which is never actually applied here regardless.
+  if (planRequest.constraints.target !== "aws") {
+    plan = checkSandboxLimits(plan, planRequest.constraints.max_memory_gb);
   }
 
   return { value: plan, rawResponse: result.rawResponse, mocked: result.mocked };
+}
+
+/** Resolves which single tier's flat plan should flow through the rest of the pipeline. */
+export function selectOption(plan: CapacityPlan, tier?: Tier): CapacityPlanOption {
+  const wanted = tier ?? plan.recommended_tier;
+  return plan.options.find((o) => o.tier === wanted) ?? plan.options[0];
 }

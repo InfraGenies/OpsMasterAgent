@@ -10,6 +10,7 @@ import {
   type ComposeService,
 } from "./composeBuilder.js";
 import { generateSecret } from "./secrets.js";
+import { TERRAFORM_TEMPLATES } from "./terraformCatalog.js";
 import {
   appServices,
   cacheService,
@@ -54,7 +55,8 @@ function frontIfScaled(
 const composeSingleV1: TemplateDefinition = {
   id: "compose-single-v1",
   format: "compose",
-  description: "1 app service, no DB (UC-2)",
+  description:
+    "app only, any replica count (nginx auto-added if >1) — use ONLY when the plan has NO db and NO cache service; picking this for a plan that includes one silently drops it (UC-2)",
   render(plan, variables, ctx): RenderResult {
     const app = appServices(plan)[0] ?? plan.services[0];
     if (!app) throw new Error("compose-single-v1: plan has no services");
@@ -90,7 +92,8 @@ const composeSingleV1: TemplateDefinition = {
 const composeWebDbV1: TemplateDefinition = {
   id: "compose-web-db-v1",
   format: "compose",
-  description: "app + postgres/mysql + volume (UC-1, UC-5)",
+  description:
+    "app + postgres/mysql + volume, ANY replica count (nginx auto-added if >1) — use this whenever the plan has a db service and no cache, regardless of replica count (UC-1, UC-5)",
   render(plan, variables, ctx): RenderResult {
     const app = appServices(plan)[0];
     const db = dbService(plan);
@@ -160,7 +163,8 @@ const composeWebDbV1: TemplateDefinition = {
 const composeWebDbCacheV1: TemplateDefinition = {
   id: "compose-web-db-cache-v1",
   format: "compose",
-  description: "app + db + redis (UC-7 target state)",
+  description:
+    "app + db + redis, ANY replica count (nginx auto-added if >1) — use this whenever the plan has BOTH a db and a cache service, regardless of replica count (UC-7 target state)",
   render(plan, variables, ctx): RenderResult {
     const app = appServices(plan)[0];
     const db = dbService(plan);
@@ -241,7 +245,8 @@ const composeWebDbCacheV1: TemplateDefinition = {
 const composeLbReplicasV1: TemplateDefinition = {
   id: "compose-lb-replicas-v1",
   format: "compose",
-  description: "nginx + N app replicas + redis (UC-4)",
+  description:
+    "nginx + N app replicas + optional redis, NO db support — do not pick this for a plan that includes a db service, it will be silently dropped; only use when there is no db service, even if replicas > 1 (compose-web-db-v1 already handles replicas > 1 with a db) (UC-4)",
   render(plan, _variables, ctx): RenderResult {
     const app = appServices(plan)[0];
     const cache = cacheService(plan);
@@ -292,6 +297,7 @@ export const TEMPLATES: Record<TemplateId, TemplateDefinition> = {
   "compose-web-db-v1": composeWebDbV1,
   "compose-web-db-cache-v1": composeWebDbCacheV1,
   "compose-lb-replicas-v1": composeLbReplicasV1,
+  ...TERRAFORM_TEMPLATES,
 };
 
 export function renderTemplate(

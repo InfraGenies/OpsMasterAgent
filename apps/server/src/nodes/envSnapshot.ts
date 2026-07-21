@@ -1,15 +1,15 @@
-import type { CapacityPlan, EnvironmentRecord, IaCFile, TemplateId } from "@ops-master/shared";
+import type { CapacityPlanOption, EnvironmentRecord, IaCFile, TemplateId } from "@ops-master/shared";
 
 export interface EnvSnapshot {
   template_id: TemplateId;
-  capacity_plan: CapacityPlan;
+  capacity_plan: CapacityPlanOption;
   files: IaCFile[];
   endpoints: string[];
 }
 
 /** Serialized into environments.files_json / endpoints_json so a future `modify` has everything needed to merge + diff. */
 export function encodeSnapshot(
-  snap: { template_id: TemplateId; capacity_plan: CapacityPlan; files: IaCFile[] },
+  snap: { template_id: TemplateId; capacity_plan: CapacityPlanOption; files: IaCFile[] },
   endpoints: string[]
 ): { files_json: string; endpoints_json: string } {
   return {

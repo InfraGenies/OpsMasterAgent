@@ -27,6 +27,18 @@ export interface RollbackOutcome {
  *  - rollback failure itself is surfaced, never hidden
  */
 export async function runRollback(input: RollbackInput): Promise<RollbackOutcome> {
+  if (input.payload.format === "terraform") {
+    // Plan-only sandbox (UC-9) — nothing was ever applied, so there is
+    // nothing to tear down or restore.
+    input.onLog("[rollback] terraform path is plan-only — nothing was applied, nothing to roll back");
+    return {
+      ok: true,
+      detail: "no-op: terraform path never applies, so there was nothing to roll back",
+      stdout: "",
+      commandExecuted: "n/a",
+    };
+  }
+
   if (input.operation === "modify" && input.payload.diff_from) {
     for (const file of input.payload.diff_from) {
       const filePath = path.join(input.deploymentDir, file.path);

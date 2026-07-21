@@ -1,4 +1,4 @@
-import type { CapacityPlan, IaCPayload, PlanRequest, PolicyFinding, PolicyReport } from "@ops-master/shared";
+import type { CapacityPlanOption, IaCPayload, PlanRequest, PolicyFinding, PolicyReport } from "@ops-master/shared";
 
 /**
  * Deterministic policy/security scan of a rendered IaCPayload — no LLM.
@@ -37,7 +37,7 @@ function checkStructural(payload: IaCPayload): PolicyFinding[] {
     {
       rule_id: "structural_invalid",
       severity: "critical",
-      message: `docker compose config rejected the rendered files: ${payload.validation.output}`,
+      message: `${payload.validation.tool} rejected the rendered files: ${payload.validation.output}`,
       file: null,
       auto_fixable: false,
     },
@@ -85,7 +85,12 @@ function checkUnpinnedImages(payload: IaCPayload): PolicyFinding[] {
   return findings;
 }
 
-function checkUnexpectedPorts(payload: IaCPayload, plan: CapacityPlan): PolicyFinding[] {
+function checkUnexpectedPorts(payload: IaCPayload, plan: CapacityPlanOption): PolicyFinding[] {
+  // Terraform/AWS plans never populate network.expose (AWS networking is
+  // ALB/VPC-based, not host port mapping) — a compose-shaped "host:container
+  // port" regex has nothing meaningful to check against for this format and
+  // would only ever false-positive, so skip it entirely.
+  if (payload.format === "terraform") return [];
   const allowed = new Set(plan.network.expose.map((e) => e.host_port));
   const findings: PolicyFinding[] = [];
   const portPattern = /-\s*['"]?(\d+):(\d+)['"]?/g;
@@ -106,7 +111,7 @@ function checkUnexpectedPorts(payload: IaCPayload, plan: CapacityPlan): PolicyFi
   return findings;
 }
 
-function checkProdReplicas(plan: CapacityPlan, planRequest: PlanRequest): PolicyFinding[] {
+function checkProdReplicas(plan: CapacityPlanOption, planRequest: PlanRequest): PolicyFinding[] {
   if (!/prod/i.test(planRequest.environment)) return [];
   const findings: PolicyFinding[] = [];
   const exposedNames = new Set(plan.network.expose.map((e) => e.service));
@@ -126,7 +131,7 @@ function checkProdReplicas(plan: CapacityPlan, planRequest: PlanRequest): Policy
 
 export function runPolicyValidator(
   payload: IaCPayload,
-  plan: CapacityPlan,
+  plan: CapacityPlanOption,
   planRequest: PlanRequest,
   attempts: number
 ): PolicyReport {

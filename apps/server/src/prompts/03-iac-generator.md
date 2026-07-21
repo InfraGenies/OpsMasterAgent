@@ -9,6 +9,12 @@ produce an IaCPayload JSON. Respond with ONLY JSON.
 Rules:
 1. You MUST select template_id from the catalogue provided. If no template fits,
    return {"error": "no_template", "needed": "<describe>"} — do not improvise files.
+   Selection is driven by which services the plan has (db? cache?), NEVER by replica
+   count alone — every template handles any replica count for its app service the
+   same way (nginx auto-added when replicas > 1), so replica count never
+   disambiguates between templates. A template that doesn't render a service the
+   plan has (e.g. a db) silently drops it — re-read each candidate's description
+   for exactly which services it does/doesn't support before picking.
 2. You provide only the "variables" object for the template; the backend renders it.
    Never emit raw shell commands; apply_command/rollback_command come from the
    template metadata, not from you.

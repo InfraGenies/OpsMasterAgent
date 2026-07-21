@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://localhost:4100/api/runs/req-2026-04349873)",
+      "Bash(node -e ' *)",
+      "Bash(curl -s -X POST http://localhost:4100/api/runs/req-2026-04349873/decision -H \"Content-Type: application/json\" -d '{\"action\":\"edit\",\"actor\":\"ravi\",\"capacity_plan_patch\":{\"selected_tier\":\"economy\"}}')"
+    ]
+  }
+}

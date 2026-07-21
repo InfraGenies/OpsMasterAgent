@@ -6,11 +6,11 @@
  * machine — that's expected; it still proves the allow-list + rollback code
  * path executes correctly, just not a live container.
  */
-import { isMockMode } from "./llm/client.js";
+import { activeProviderName, isMockMode } from "./llm/client.js";
 import { loadLatestNodeOutput } from "./orchestrator/audit.js";
 import { startRun, submitDecision } from "./orchestrator/pipeline.js";
 import { getStore } from "./store/index.js";
-import type { IaCPayload, PolicyReport } from "@ops-master/shared";
+import type { CapacityPlan, IaCPayload, PolicyReport } from "@ops-master/shared";
 
 async function waitForStatus(requestId: string, statuses: string[], timeoutMs = 30000): Promise<string> {
   const start = Date.now();
@@ -24,7 +24,7 @@ async function waitForStatus(requestId: string, statuses: string[], timeoutMs = 
 }
 
 async function main() {
-  console.log(`mock LLM mode: ${isMockMode()}`);
+  console.log(`mock LLM mode: ${isMockMode()} (provider: ${activeProviderName()})`);
 
   console.log("\n=== UC-2: simple single-container dev environment ===");
   const uc2 = await startRun("Spin up a dev environment for a simple Node.js todo app, low traffic, single instance.", null);
@@ -93,6 +93,17 @@ async function main() {
     console.log("--- docker-compose.yml ---");
     console.log(iac?.files.find((f) => f.path === "docker-compose.yml")?.content);
 
+    const plan = await loadLatestNodeOutput<CapacityPlan>(store, uc1, "planner");
+    console.log(
+      `\nmulti-tier plan: ${plan?.options.length} option(s) [${plan?.options.map((o) => `${o.tier}=$${o.estimated_cost_usd_monthly}/mo`).join(", ")}], recommended=${plan?.recommended_tier} (expected: 3 options)`
+    );
+
+    console.log("switching to economy tier before approving...");
+    await submitDecision(uc1, "edit", null, "smoke-test", { selected_tier: "economy" });
+    await waitForStatus(uc1, ["awaiting_approval", "refused", "failed"]);
+    const switchedPlan = await loadLatestNodeOutput<CapacityPlan>(store, uc1, "planner");
+    console.log(`recommended_tier after switch: ${switchedPlan?.recommended_tier} (expected: economy)`);
+
     console.log("\napproving...");
     await submitDecision(uc1, "approve", null, "smoke-test");
     const finalStatus = await waitForStatus(uc1, ["deployed", "failed", "rolled_back"], 60000);
@@ -100,6 +111,41 @@ async function main() {
 
     const events = await store.listAuditEvents(uc1);
     console.log(`\naudit trail: ${events.length} events across nodes: ${[...new Set(events.map((e) => e.node))].join(", ")}`);
+  }
+
+  console.log("\n=== UC-9: retail-store-sample-app on AWS (Terraform, cost-conscious vs HA) ===");
+  const uc9 = await startRun(
+    "Deploy the retail-store-sample-app to AWS for a staging environment — give me a cost-conscious option and a highly-available option, with pricing for each.",
+    null
+  );
+  console.log(`request_id=${uc9}, waiting for gate...`);
+  const uc9Gate = await waitForStatus(uc9, ["awaiting_approval", "refused", "failed"]);
+  console.log(`reached: ${uc9Gate} (expected: awaiting_approval)`);
+
+  if (uc9Gate === "awaiting_approval") {
+    const store = getStore();
+    const plan = await loadLatestNodeOutput<CapacityPlan>(store, uc9, "planner");
+    console.log(
+      `options: ${plan?.options.length} (expected: 2) — ${plan?.options.map((o) => `${o.tier}=$${o.estimated_cost_usd_monthly}/mo`).join(", ")}`
+    );
+
+    const iac = await loadLatestNodeOutput<IaCPayload>(store, uc9, "iac_generator");
+    console.log(`format: ${iac?.format} (expected: terraform), template chosen: ${iac?.template_id} (expected: tf-ecs-fargate-v1, economy is recommended)`);
+    console.log(`validation: ok=${iac?.validation.ok} — ${iac?.validation.output.slice(0, 200)}`);
+
+    console.log("\napproving...");
+    await submitDecision(uc9, "approve", null, "smoke-test");
+    const uc9FinalStatus = await waitForStatus(uc9, ["deployed", "failed", "rolled_back"], 60000);
+    console.log(`final status: ${uc9FinalStatus} (expected: deployed, plan-only)`);
+
+    const uc9Events = await store.listAuditEvents(uc9);
+    const commandsExecuted = uc9Events.map((e) => e.command_executed).filter(Boolean);
+    const sawApplyOrDestroy = commandsExecuted.some((c) => /\bapply\b|\bdestroy\b/i.test(c ?? ""));
+    console.log(`commands recorded: ${commandsExecuted.join(" | ") || "(none)"}`);
+    console.log(`no apply/destroy command reached the allow-list: ${!sawApplyOrDestroy} (expected: true — this path must stay plan-only)`);
+
+    const deployEvent = uc9Events.find((e) => e.node === "deploy");
+    console.log(`deploy detail: ${deployEvent?.detail}`);
   }
 
   console.log("\nsmoke test complete.");

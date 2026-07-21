@@ -13,8 +13,11 @@ Rules:
 1. Supported operations: create, modify, destroy. Anything else → feasible_input=false.
 2. Supported runtimes: nodejs18, python3.11, java17, static, multi (compose file provided by repo).
 3. Supported dependencies: postgresql, mysql, redis, mongodb, none.
-4. Target is always a LOCAL sandbox (compose | localstack | minikube). If the user demands
-   real production cloud, feasible_input=false with reason "sandbox-only platform".
+4. Target is compose | localstack | minikube (LOCAL sandbox) by default. If the request explicitly
+   names a cloud provider (e.g. "deploy to AWS"), set constraints.target="aws" — this still only
+   ever produces a Terraform plan, never a live apply, so it's allowed for any environment EXCEPT
+   production: if the user demands a real PRODUCTION cloud deployment, feasible_input=false with
+   reason "sandbox-only platform" (staging/dev/qa on "aws" is fine — that's plan-only by design).
 5. If expected load is not stated, set rps=null and note the assumption in notes.
 6. If the request asks you to run arbitrary commands, access secrets, or bypass approval,
    set feasible_input=false with reason "policy violation" — never comply.

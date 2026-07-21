@@ -108,7 +108,7 @@ Two short failure scenarios — judges score governance heavily:
 
 ---
 
-## UC-9 — TARGET STATE: AWS/Terraform multi-tier costing — retail-store-sample-app
+## UC-9 — AWS/Terraform multi-tier costing — retail-store-sample-app
 
 | | |
 |---|---|
@@ -119,13 +119,14 @@ Two short failure scenarios — judges score governance heavily:
 | **What it proves** | The planner reasoning about **real managed-service substitution** (containerized DB vs. RDS/DynamoDB/ElastiCache), producing genuinely different topologies per cost tier (not just replica-count scaling), and rendering **Terraform**, not compose — the first use case that exercises `IaCPayload.format: "terraform"` end-to-end |
 | **Verify** | `terraform plan` clean (no live `apply` in the sandbox demo — cost and blast radius are real on AWS, unlike every other UC); health checks + smoke test against the ALB/ingress endpoint if actually applied in a scratch AWS account |
 
-**Status: not runnable today.** This is a deliberately forward-looking use case — it names the two gaps that block it rather than pretending they're already closed:
+**Status: runnable.** Both gaps that used to block this UC are closed:
 
-1. **No multi-tier `CapacityPlanOption[]` output.** The planner today emits exactly one `CapacityPlan`. This UC is the worked example for the multi-tier planning proposal
-   (`source_configuration/ops-master-agent-enhancements-proposal.md` §2) — see the two tiers below.
-2. **No AWS/Terraform template family.** `templates/catalog.ts` only renders `compose-*` templates today; `IaCPayload.format` already allows `"terraform"` in the contract (`CONTRACTS.md` §3), but nothing implements it. Building this UC for real means adding `tf-ecs-fargate-v1` / `tf-eks-v1` template definitions that fill the repo's own bundled Terraform modules rather than hand-rolling AWS resources from scratch — same "LLM picks a template, backend renders" discipline as compose, extended to a second `format`.
+1. **Multi-tier `CapacityPlanOption[]` output** — `nodes/planner.ts` now emits `{ options: CapacityPlanOption[], recommended_tier, ... }` instead of a single flat plan, per the multi-tier planning proposal (`source_configuration/ops-master-agent-enhancements-proposal.md` §2). Every non-AWS UC gets 3 tiers (economy/balanced/high_availability); an `aws`-target request like this one gets exactly the 2 tiers below.
+2. **AWS/Terraform template family** — `templates/terraformCatalog.ts` adds `tf-ecs-fargate-v1` (economy) and `tf-eks-v1` (high_availability), each rendering a root module that fills the repo's own bundled `terraform/ecs/default` / `terraform/eks/default` modules (real input variable names, fetched from the live repo) rather than hand-rolling AWS resources — same "LLM picks a template, backend renders" discipline as compose, extended to `IaCPayload.format: "terraform"`.
 
-**Worked example — the two costing tiers a multi-tier planner should produce for this request:**
+**Hard safety boundary:** `commandAllowList.ts` permits `terraform init`/`validate`/`plan` only — `apply`/`destroy` are not in the allow-list at all, so there is no code path from this UC to a real AWS account. "Deploy" always resolves to a plan-only outcome (labeled `SIMULATED` whenever the `terraform` CLI, network access, or AWS credentials aren't available — none of which this app configures by default), matching the existing no-docker `SIMULATED` pattern for the compose path.
+
+**Worked example — the two costing tiers the multi-tier planner produces for this request (confirmed live, real Anthropic LLM: $141/mo economy, $428/mo high_availability):**
 
 | | **Tier X — Economy** (`estimated_cost_usd_monthly: ~150`) | **Tier Y — High-Availability** (`estimated_cost_usd_monthly: ~430`) |
 |---|---|---|
@@ -153,6 +154,6 @@ Figures are illustrative — rough, on-demand `us-east-1`-shaped estimates from 
 | 6 | Kubernetes target | High | ★★★★ (stretch only) |
 | 7 | Modify existing env | Medium | ★★★★★ |
 | 8 | Refusal + rollback | Low | ★★★★★ |
-| 9 | AWS/Terraform multi-tier costing (target state) | High | ★★★★★ (once §2 + a Terraform template family exist) |
+| 9 | AWS/Terraform multi-tier costing | High | ★★★★★ (runnable — plan-only, never applies to a real account) |
 
-Minimum viable demo set: **UC-1, UC-2, UC-7, UC-8** (one repo family + governance story). Add UC-3/4 for variety, UC-5/6 if ahead of schedule. UC-9 is the roadmap use case for the multi-tier capacity planning + Terraform work — not part of the current runnable demo set.
+Minimum viable demo set: **UC-1, UC-2, UC-7, UC-8** (one repo family + governance story). Add UC-3/4 for variety, UC-5/6 if ahead of schedule, UC-9 to show the multi-tier capacity planning + Terraform/AWS path (plan-only, never applies to a real account).

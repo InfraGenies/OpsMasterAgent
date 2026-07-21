@@ -1,10 +1,10 @@
 import { completeRaw, isMockMode } from "../llm/client.js";
-import type { AuditEvent, CapacityPlan, PlanRequest, Run, VerifyReport } from "@ops-master/shared";
+import type { AuditEvent, CapacityPlanOption, PlanRequest, Run, VerifyReport } from "@ops-master/shared";
 
 export interface ReportInput {
   run: Run;
   planRequest?: PlanRequest;
-  capacityPlan?: CapacityPlan;
+  capacityPlan?: CapacityPlanOption;
   verifyReport?: VerifyReport;
   auditEvents: AuditEvent[];
   refusalReason?: string;
@@ -23,7 +23,7 @@ function deterministicReport(input: ReportInput): string {
     lines.push(input.refusalReason);
     lines.push("");
   } else if (input.capacityPlan) {
-    lines.push(`## Capacity Plan`);
+    lines.push(`## Capacity Plan — ${input.capacityPlan.tier} tier (~$${input.capacityPlan.estimated_cost_usd_monthly}/mo estimated)`);
     lines.push(input.capacityPlan.reasoning);
     lines.push("");
     lines.push("| Service | Image | CPU | Memory | Replicas |");

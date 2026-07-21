@@ -27,7 +27,7 @@ export const DependencySchema = z.enum([
 ]);
 export type Dependency = z.infer<typeof DependencySchema>;
 
-export const TargetSchema = z.enum(["compose", "localstack", "minikube"]);
+export const TargetSchema = z.enum(["compose", "localstack", "minikube", "aws"]);
 export type Target = z.infer<typeof TargetSchema>;
 
 // ---------------------------------------------------------------------------
@@ -68,6 +68,10 @@ export const ServiceSpecSchema = z.object({
   replicas: z.number().int().min(1),
   ports: z.array(z.number().int()),
   env: z.record(z.string(), z.string()).optional(),
+  /** Set only on the AWS/Terraform planning path — a managed-service substitution for this service's data dependency (e.g. RDS instead of a containerized postgres). Absent/null for every compose tier. */
+  managed_service: z.enum(["rds", "dynamodb", "elasticache"]).nullable().optional(),
+  /** AWS/Terraform path only: whether this managed service has cross-AZ failover at this tier. */
+  multi_az: z.boolean().optional(),
 });
 export type ServiceSpec = z.infer<typeof ServiceSpecSchema>;
 
@@ -79,8 +83,19 @@ export const StorageSpecSchema = z.object({
 });
 export type StorageSpec = z.infer<typeof StorageSpecSchema>;
 
-export const CapacityPlanSchema = z.object({
-  request_id: z.string(),
+/**
+ * One priced tier's worth of a plan — everything downstream of the planner
+ * (readiness_check, iac_generator, policy_validator, templates, env
+ * snapshots) consumes exactly this shape, unaware that the planner produced
+ * more than one of them. Kept field-identical to the old single-plan
+ * CapacityPlan on purpose so those nodes needed no rewrite, just a type
+ * rename from CapacityPlan to CapacityPlanOption.
+ */
+export const TierSchema = z.enum(["economy", "balanced", "high_availability"]);
+export type Tier = z.infer<typeof TierSchema>;
+
+export const CapacityPlanOptionSchema = z.object({
+  tier: TierSchema,
   services: z.array(ServiceSpecSchema),
   storage: z.array(StorageSpecSchema),
   network: z.object({
@@ -88,6 +103,18 @@ export const CapacityPlanSchema = z.object({
     internal: z.array(z.string()),
   }),
   reasoning: z.string(),
+  feasible: z.boolean(),
+  infeasibility_reason: z.string().nullable(),
+  estimated_cost_usd_monthly: z.number(),
+  headroom_pct: z.number(),
+  availability_notes: z.string(),
+});
+export type CapacityPlanOption = z.infer<typeof CapacityPlanOptionSchema>;
+
+export const CapacityPlanSchema = z.object({
+  request_id: z.string(),
+  options: z.array(CapacityPlanOptionSchema).min(1),
+  recommended_tier: TierSchema,
   feasible: z.boolean(),
   infeasibility_reason: z.string().nullable(),
 });
@@ -101,6 +128,8 @@ export const TemplateIdSchema = z.enum([
   "compose-web-db-v1",
   "compose-web-db-cache-v1",
   "compose-lb-replicas-v1",
+  "tf-ecs-fargate-v1",
+  "tf-eks-v1",
 ]);
 export type TemplateId = z.infer<typeof TemplateIdSchema>;
 

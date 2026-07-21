@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 
 /**
- * Hard-coded allow-list (05-deploy-agent.md). Only docker-compose commands
- * for this MVP — terraform/kubectl are out of scope (see README). Anything
- * that doesn't match one of these exact shapes is refused before a single
+ * Hard-coded allow-list (05-deploy-agent.md). Docker-compose commands, plus
+ * (UC-9) a narrow terraform init/validate/plan set for the AWS path —
+ * `apply`/`destroy` are deliberately NEVER in this list; this sandbox never
+ * touches a real AWS account, only ever produces a plan. Anything that
+ * doesn't match one of these exact shapes is refused before a single
  * process is spawned; there is no free-text command path.
  */
 const ALLOWED: { re: RegExp; argv: (m: RegExpMatchArray) => string[] }[] = [
@@ -18,6 +20,18 @@ const ALLOWED: { re: RegExp; argv: (m: RegExpMatchArray) => string[] }[] = [
   {
     re: /^docker compose -p ([a-z0-9][a-z0-9_.-]*) config -q$/,
     argv: (m) => ["compose", "-p", m[1], "config", "-q"],
+  },
+  {
+    re: /^terraform init -backend=false -input=false -no-color$/,
+    argv: () => ["init", "-backend=false", "-input=false", "-no-color"],
+  },
+  {
+    re: /^terraform validate -no-color$/,
+    argv: () => ["validate", "-no-color"],
+  },
+  {
+    re: /^terraform plan -input=false -no-color -out=tfplan$/,
+    argv: () => ["plan", "-input=false", "-no-color", "-out=tfplan"],
   },
 ];
 

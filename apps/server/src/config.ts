@@ -17,6 +17,14 @@ export const env = {
   ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-5",
   MOCK_LLM: bool(process.env.MOCK_LLM, false),
 
+  // "auto" (default): use the first configured provider below (Anthropic,
+  // then Kiro). "anthropic"/"kiro" forces one — falls back to mock if that
+  // provider's credentials aren't set. See llm/client.ts: resolveProvider.
+  LLM_PROVIDER: (process.env.LLM_PROVIDER ?? "auto").toLowerCase(),
+  KIRO_API_KEY: process.env.KIRO_API_KEY ?? "",
+  KIRO_API_BASE_URL: process.env.KIRO_API_BASE_URL ?? "",
+  KIRO_MODEL: process.env.KIRO_MODEL ?? "",
+
   SUPABASE_URL: process.env.SUPABASE_URL ?? "",
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
   LOCAL_STORE_PATH: path.resolve(SERVER_ROOT, "data", "local-store.json"),

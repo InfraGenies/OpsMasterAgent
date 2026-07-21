@@ -179,6 +179,7 @@ export function App() {
 
             {detail.run.status === "awaiting_approval" && detail.capacity_plan && detail.iac_payload && (
               <ApprovalGate
+                key={detail.capacity_plan.recommended_tier}
                 plan={detail.capacity_plan}
                 iac={detail.iac_payload}
                 policy={detail.policy_report}

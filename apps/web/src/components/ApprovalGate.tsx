@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { CapacityPlan, IaCPayload, PolicyReport } from "@ops-master/shared";
+import type { CapacityPlan, IaCPayload, PolicyReport, Tier } from "@ops-master/shared";
+import { CapacityPlanView } from "./CapacityPlanView";
 
 export function ApprovalGate({
   plan,
@@ -12,13 +13,14 @@ export function ApprovalGate({
   policy?: PolicyReport | null;
   onDecision: (action: "approve" | "reject" | "edit", comment: string | null, patch?: Record<string, unknown>) => void;
 }) {
+  const activeOption = plan.options.find((o) => o.tier === plan.recommended_tier) ?? plan.options[0];
   const unresolvedBlocking = policy?.findings.filter(
     (f) => f.severity === "critical" || f.severity === "high"
   );
   const [comment, setComment] = useState("");
   const [editing, setEditing] = useState(false);
   const [edits, setEdits] = useState<Record<string, { replicas: number; memory: string }>>(() =>
-    Object.fromEntries(plan.services.map((s) => [s.name, { replicas: s.replicas, memory: s.memory }]))
+    Object.fromEntries(activeOption.services.map((s) => [s.name, { replicas: s.replicas, memory: s.memory }]))
   );
 
   function submitEdit() {
@@ -27,6 +29,11 @@ export function ApprovalGate({
     };
     onDecision("edit", comment || null, patch);
     setEditing(false);
+  }
+
+  function switchTier(tier: Tier) {
+    if (tier === plan.recommended_tier) return;
+    onDecision("edit", null, { selected_tier: tier });
   }
 
   return (
@@ -57,6 +64,15 @@ export function ApprovalGate({
         </div>
       )}
 
+      {plan.options.length > 1 && (
+        <div className="space-y-1.5">
+          <div className="text-xs text-slate-400">
+            Click another tier to re-render its IaC and re-run readiness + policy checks before approving:
+          </div>
+          <CapacityPlanView plan={plan} selectedTier={plan.recommended_tier} onSelectTier={switchTier} />
+        </div>
+      )}
+
       <div className="text-xs text-slate-400 font-mono bg-slate-950/60 border border-slate-800 rounded-lg p-2.5 space-y-1">
         <div>
           <span className="text-slate-600 select-none">$ </span>
@@ -70,7 +86,7 @@ export function ApprovalGate({
 
       {editing && (
         <div className="space-y-2 border border-slate-700/70 rounded-lg p-3 bg-slate-950/50">
-          {plan.services.map((s) => (
+          {activeOption.services.map((s) => (
             <div key={s.name} className="flex items-center gap-3 text-xs">
               <span className="w-20 text-slate-300 font-medium">{s.name}</span>
               <label className="flex items-center gap-1.5 text-slate-500">
@@ -123,9 +139,11 @@ export function ApprovalGate({
         <button className="btn-danger" onClick={() => onDecision("reject", comment || null)}>
           ✕ Reject with comment
         </button>
-        <button className="btn-ghost" onClick={() => setEditing((v) => !v)}>
-          ✎ Edit parameters
-        </button>
+        {iac.format !== "terraform" && (
+          <button className="btn-ghost" onClick={() => setEditing((v) => !v)}>
+            ✎ Edit parameters
+          </button>
+        )}
       </div>
     </div>
   );

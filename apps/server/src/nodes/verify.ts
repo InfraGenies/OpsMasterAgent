@@ -17,6 +17,8 @@ export interface VerifyInput {
    * offline. Real mode ignores this — a genuinely bad config fails naturally.
    */
   forceFail?: boolean;
+  /** UC-9: AWS/Terraform path never has a live endpoint to probe (plan-only, nothing applied) — set to the deploy step's detail message to short-circuit straight to a plan-based verify report. */
+  terraformDeployDetail?: string;
 }
 
 function joinUrl(base: string, path: string): string {
@@ -74,6 +76,19 @@ async function runSmokeTest(url: string, targetRps: number, onLog: (l: string) =
 
 /** Deterministic verdict per 06-verify-agent.md: no LLM in the pass/fail decision. */
 export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
+  if (input.terraformDeployDetail !== undefined) {
+    input.onLog("[verify] terraform plan-only path — no live AWS endpoint exists to health-check");
+    return {
+      request_id: input.requestId,
+      checks: [{ name: "terraform plan (plan-only — no live endpoint)", status: "pass", latency_ms: 0 }],
+      smoke_test: null,
+      verdict: "green",
+      rolled_back: false,
+      endpoints: [],
+      summary: `Plan-only verification: ${input.terraformDeployDetail} No live AWS resources exist to health-check in this sandbox.`,
+    };
+  }
+
   if (await shouldMockDeploy()) {
     if (input.forceFail) {
       const checks: CheckResult[] = input.endpoints.map((e) => {

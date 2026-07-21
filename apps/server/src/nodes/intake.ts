@@ -14,7 +14,7 @@ const SCHEMA_SHAPE = `{
   "expected_load": { "rps": number | null, "concurrent_users": number | null },
   "environment": "string, e.g. staging | qa | dev | production",
   "operation": "create | modify | destroy",
-  "constraints": { "target": "compose | localstack | minikube", "max_memory_gb": number },
+  "constraints": { "target": "compose | localstack | minikube | aws", "max_memory_gb": number },
   "existing_env_id": "string | null",
   "notes": ["string"],
   "feasible_input": boolean,
@@ -70,18 +70,22 @@ function mockIntake(requestId: string, rawText: string): PlanRequest {
   if (/\b(destroy|tear down|delete)\b/i.test(rawText) && !policyViolation) operation = "destroy";
 
   const wantsRealProdCloud = /\bproduction\b/i.test(rawText) && /\b(aws|gcp|azure|real cloud)\b/i.test(rawText);
+  // UC-9: "aws" without "production" is allowed — this path only ever
+  // produces a Terraform plan, never a live apply (see commandAllowList.ts).
+  const wantsAws = !wantsRealProdCloud && /\baws\b/i.test(rawText);
+  if (wantsAws) runtime = "multi";
 
   return {
     request_id: requestId,
     raw_text: rawText,
     app_type: "web_api",
     runtime,
-    repo_url: repoMatch ? repoMatch[0] : null,
+    repo_url: repoMatch ? repoMatch[0] : wantsAws && /retail-store-sample-app/i.test(rawText) ? "https://github.com/aws-containers/retail-store-sample-app" : null,
     dependencies,
     expected_load: { rps, concurrent_users: concurrentUsers },
     environment: lower.includes("staging") ? "staging" : lower.includes("qa") ? "qa" : "dev",
     operation,
-    constraints: { target: "compose", max_memory_gb: 8 },
+    constraints: { target: wantsAws ? "aws" : "compose", max_memory_gb: 8 },
     existing_env_id: null,
     notes:
       rps === null
