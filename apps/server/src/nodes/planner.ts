@@ -99,7 +99,7 @@ const RETAIL_APP_SERVICES: { name: string; lang: string; managed?: "rds" | "dyna
   { name: "checkout", lang: "Node.js", managed: "elasticache" },
 ];
 
-function buildAwsOptions(planRequest: PlanRequest): CapacityPlanOption[] {
+function buildAwsOptions(planRequest: PlanRequest, humanFeedback?: string): CapacityPlanOption[] {
   function services(taskCount: number, cpu: string, memory: string, multiAz: boolean): ServiceSpec[] {
     return RETAIL_APP_SERVICES.map((s) => ({
       name: s.name,
@@ -119,6 +119,14 @@ function buildAwsOptions(planRequest: PlanRequest): CapacityPlanOption[] {
   );
   const haCost = estimateEksMonthlyCost(3, 2);
 
+  // Topology per tier is a fixed worked example (UC-9), not derived from the
+  // request — so rejection feedback can't resize it the way the generic
+  // sandbox path does. Still surface it rather than silently discarding it.
+  const feedbackSuffix = humanFeedback
+    ? ` Reviewer feedback noted: "${humanFeedback}" — this AWS worked example's topology is fixed per UC-9, so ` +
+      `switching between the economy and high-availability tiers shown here is the available response to that feedback.`
+    : "";
+
   const economy: CapacityPlanOption = {
     tier: "economy",
     services: services(1, "0.25", "512Mi", false),
@@ -127,7 +135,8 @@ function buildAwsOptions(planRequest: PlanRequest): CapacityPlanOption[] {
     reasoning:
       "Staging traffic is low and this is cost-sensitive: one ECS Fargate task per service (0.25 vCPU / 0.5GB each) " +
       "in a single AZ, RDS db.t3.micro for catalog and orders (single-AZ), DynamoDB on-demand for cart, ElastiCache " +
-      "cache.t3.micro single node for checkout, 1 ALB + 1 NAT Gateway. Acceptable because staging carries no uptime SLA.",
+      "cache.t3.micro single node for checkout, 1 ALB + 1 NAT Gateway. Acceptable because staging carries no uptime SLA." +
+      feedbackSuffix,
     feasible: true,
     infeasibility_reason: null,
     estimated_cost_usd_monthly: economyCost.totalUsdMonthly,
@@ -148,7 +157,8 @@ function buildAwsOptions(planRequest: PlanRequest): CapacityPlanOption[] {
       "plane + 3x t3.medium worker nodes across 2 AZs (2 pod replicas per service), RDS db.t3.small Multi-AZ for " +
       "catalog and orders, DynamoDB on-demand with autoscaling headroom for cart, ElastiCache cache.t3.small " +
       "2-node replication group for checkout, 1 ALB + 2 NAT Gateways for multi-AZ egress. Costs roughly 2.9x more " +
-      "than the economy tier but removes every single point of failure.",
+      "than the economy tier but removes every single point of failure." +
+      feedbackSuffix,
     feasible: true,
     infeasibility_reason: null,
     estimated_cost_usd_monthly: haCost.totalUsdMonthly,
@@ -162,11 +172,11 @@ function buildAwsOptions(planRequest: PlanRequest): CapacityPlanOption[] {
   return [economy, highAvailability];
 }
 
-function mockPlanner(planRequest: PlanRequest): CapacityPlan {
+function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): CapacityPlan {
   if (planRequest.constraints.target === "aws") {
     return {
       request_id: planRequest.request_id,
-      options: buildAwsOptions(planRequest),
+      options: buildAwsOptions(planRequest, humanFeedback),
       recommended_tier: "economy",
       feasible: true,
       infeasibility_reason: null,
@@ -244,12 +254,26 @@ function mockPlanner(planRequest: PlanRequest): CapacityPlan {
   const replicasHint = planRequest.raw_text.match(/(\d+)\s*replicas?\b/i);
   const explicitReplicas = replicasHint ? Math.min(4, Math.max(1, Number(replicasHint[1]))) : null;
 
+  // A human rejection comment is a fresh instruction from the same reviewer
+  // about to see this plan again — it overrides both load-based sizing and
+  // the original explicit-replica request for this rework. Mirrors what the
+  // real LLM path already does by reading humanFeedback in its prompt; without
+  // this, mock mode reproduced the exact same plan on every reject, which is
+  // indistinguishable from "reject" doing nothing at all.
+  const feedbackLower = (humanFeedback ?? "").toLowerCase();
+  const feedbackNumberHint = humanFeedback?.match(/(\d+)\s*replicas?\b/i);
+  const feedbackReplicas = feedbackNumberHint ? Math.min(4, Math.max(1, Number(feedbackNumberHint[1]))) : null;
+  const feedbackWantsFewer = /\b(fewer|reduce|less|lower|scale[\s-]?down|smaller|cheaper|too many)\b/.test(feedbackLower);
+  const feedbackWantsMore = /\b(more replicas|increase|scale[\s-]?up|add (a )?replica|higher availability|too few)\b/.test(
+    feedbackLower
+  );
+
   const isProd = environmentLower.includes("prod");
   const hasDb = planRequest.dependencies.includes("postgresql") || planRequest.dependencies.includes("mysql");
   const hasRedis = planRequest.dependencies.includes("redis");
 
   function buildOption(cfg: TierConfig): CapacityPlanOption {
-    const replicas = explicitReplicas ?? Math.min(4, ceilReplicas(rps, perInstance, cfg.headroomPct, cfg.replicaFloor) + cfg.extraReplica);
+    let replicas = explicitReplicas ?? Math.min(4, ceilReplicas(rps, perInstance, cfg.headroomPct, cfg.replicaFloor) + cfg.extraReplica);
     const reasons: string[] = [];
     if (planRequest.expected_load.rps === null && users) {
       reasons.push(`~${users} concurrent users at ~1 rps per 10 users -> sizing for ~${rps} rps.`);
@@ -269,6 +293,21 @@ function mockPlanner(planRequest: PlanRequest): CapacityPlan {
       }
     }
 
+    if (humanFeedback) {
+      if (feedbackReplicas !== null) {
+        replicas = feedbackReplicas;
+        reasons.push(`Reviewer feedback set replica count to ${replicas} explicitly: "${humanFeedback}".`);
+      } else if (feedbackWantsFewer) {
+        replicas = Math.max(1, replicas - 1);
+        reasons.push(`Reviewer feedback addressed by reducing to ${replicas} replica(s): "${humanFeedback}".`);
+      } else if (feedbackWantsMore) {
+        replicas = Math.min(4, replicas + 1);
+        reasons.push(`Reviewer feedback addressed by increasing to ${replicas} replica(s): "${humanFeedback}".`);
+      } else {
+        reasons.push(`Reviewer feedback noted: "${humanFeedback}" — no specific replica/cost instruction recognized in it.`);
+      }
+    }
+
     const services: ServiceSpec[] = [{ name: "app", image, cpu, memory, replicas, ports: [appPort] }];
     const storage: StorageSpec[] = [];
     if (appVolume) {
@@ -278,7 +317,7 @@ function mockPlanner(planRequest: PlanRequest): CapacityPlan {
     const expose: CapacityPlanOption["network"]["expose"] = [{ service: "app", host_port: appPort }];
     const internal: string[] = [];
 
-    let availabilityNotes = cfg.extraReplica > 0 ? `${replicas}x app replicas` : `${replicas}x app replica(s)`;
+    let availabilityNotes = replicas > 1 ? `${replicas}x app replicas` : `${replicas}x app replica(s)`;
 
     if (planRequest.dependencies.includes("postgresql")) {
       services.push({ name: "db", image: "postgres:16-alpine", cpu: "1.0", memory: "1Gi", replicas: 1, ports: [5432] });
@@ -344,7 +383,7 @@ export async function runPlanner(
     schema: CapacityPlanSchema,
     system: SYSTEM_PROMPT,
     user: buildUserPrompt(planRequest, existingPlan, humanFeedback),
-    mock: () => mockPlanner(planRequest),
+    mock: () => mockPlanner(planRequest, humanFeedback),
     node: "planner",
   });
 
