@@ -28,7 +28,11 @@ export const USE_CASES: UseCase[] = [
     id: "UC-3",
     label: "Voting app (5 services)",
     text: "Provision a QA environment for a voting application with a vote frontend, results dashboard, Redis queue and Postgres, expecting 200 concurrent voters.",
-    status: "supported",
+    // Same limitation as UC-6: every compose template in templates/catalog.ts
+    // covers exactly one app service. This plans correctly and then refuses
+    // at readiness_check/iac_generator ("template_topology_supported" /
+    // "no_template") — a real multi-service compose template is unbuilt.
+    status: "roadmap",
   },
   {
     id: "UC-4",

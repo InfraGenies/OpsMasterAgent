@@ -15,7 +15,7 @@ export function ChatInput({ onSubmit, disabled }: { onSubmit: (text: string) => 
       <textarea
         className="field w-full p-3.5 text-base resize-none"
         rows={5}
-        placeholder='Describe the infrastructure you need, e.g. "Create a staging environment for a Node.js application with PostgreSQL capable of handling 500 requests/second."'
+        placeholder="Describe the infrastructure you need, or pick an example below."
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
