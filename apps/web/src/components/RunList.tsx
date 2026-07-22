@@ -7,10 +7,16 @@ const STATUS_STYLE: Record<Run["status"], { badge: string; dot: string; label: s
     dot: "bg-amber-400 animate-pulse",
     label: "needs approval",
   },
+  awaiting_plan_review: {
+    badge: "border-indigo-700 bg-indigo-950/60 text-indigo-300",
+    dot: "bg-indigo-400",
+    label: "plan for review",
+  },
   deployed: { badge: "border-emerald-800 bg-emerald-950/60 text-emerald-300", dot: "bg-emerald-400", label: "deployed" },
   failed: { badge: "border-rose-800 bg-rose-950/60 text-rose-300", dot: "bg-rose-400", label: "failed" },
   rolled_back: { badge: "border-orange-800 bg-orange-950/60 text-orange-300", dot: "bg-orange-400", label: "rolled back" },
   refused: { badge: "border-slate-700 bg-slate-900 text-slate-400", dot: "bg-slate-500", label: "refused" },
+  plan_ready: { badge: "border-violet-700 bg-violet-950/60 text-violet-300", dot: "bg-violet-400", label: "plan ready" },
 };
 
 export function StatusBadge({ status }: { status: Run["status"] }) {

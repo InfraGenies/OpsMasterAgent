@@ -20,7 +20,8 @@ runsRouter.post("/", async (req, res, next) => {
     const rawText = String(req.body?.raw_text ?? "").trim();
     if (!rawText) throw new HttpError(400, "raw_text is required");
     const existingEnvId = typeof req.body?.existing_env_id === "string" ? req.body.existing_env_id : null;
-    const requestId = await startRun(rawText, existingEnvId);
+    const planOnly = req.body?.mode === "plan_only";
+    const requestId = await startRun(rawText, existingEnvId, planOnly);
     res.status(202).json({ request_id: requestId });
   } catch (err) {
     next(err);
@@ -80,8 +81,8 @@ runsRouter.get("/:id/audit", async (req, res, next) => {
 runsRouter.post("/:id/decision", async (req, res, next) => {
   try {
     const action = req.body?.action;
-    if (!["approve", "reject", "edit"].includes(action)) {
-      throw new HttpError(400, `action must be approve|reject|edit, got "${action}"`);
+    if (!["approve", "reject", "edit", "accept_plan"].includes(action)) {
+      throw new HttpError(400, `action must be approve|reject|edit|accept_plan, got "${action}"`);
     }
     const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
     const actor = typeof req.body?.actor === "string" && req.body.actor.trim() ? req.body.actor : "operator";

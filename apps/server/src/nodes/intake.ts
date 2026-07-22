@@ -17,6 +17,7 @@ const SCHEMA_SHAPE = `{
   "operation": "create | modify | destroy",
   "constraints": { "target": "compose | localstack | minikube | aws", "max_memory_gb": number },
   "existing_env_id": "string | null",
+  "plan_only": "boolean — echo the value given to you unchanged, this is a user UI toggle (Just plan this vs Plan + deploy), never infer it from wording",
   "notes": ["string"],
   "feasible_input": boolean,
   "infeasibility_reason": "string | null",
@@ -34,10 +35,16 @@ const SCHEMA_SHAPE = `{
   } // or null when enterprise_mode is false
 }`;
 
-function buildUserPrompt(requestId: string, rawText: string, existingEnvId: string | null): string {
+function buildUserPrompt(
+  requestId: string,
+  rawText: string,
+  existingEnvId: string | null,
+  planOnly: boolean
+): string {
   return [
     `request_id to use: "${requestId}"`,
     existingEnvId ? `existing_env_id to use if this is a modify/destroy: "${existingEnvId}"` : "",
+    `plan_only to use (echo unchanged, do not infer): ${planOnly}`,
     `User request (verbatim):\n"""${rawText}"""`,
     `Respond with ONLY a JSON object matching exactly this shape:\n${SCHEMA_SHAPE}`,
   ]
@@ -54,7 +61,7 @@ const POLICY_VIOLATION_PATTERNS = [
   /run arbitrary/i,
 ];
 
-function mockIntake(requestId: string, rawText: string): PlanRequest {
+function mockIntake(requestId: string, rawText: string, planOnly: boolean): PlanRequest {
   const lower = rawText.toLowerCase();
   const policyViolation = POLICY_VIOLATION_PATTERNS.some((p) => p.test(rawText));
 
@@ -107,6 +114,7 @@ function mockIntake(requestId: string, rawText: string): PlanRequest {
     operation,
     constraints: { target: wantsAws || enterpriseMode ? "aws" : "compose", max_memory_gb: 8 },
     existing_env_id: null,
+    plan_only: planOnly,
     notes:
       rps === null
         ? concurrentUsers !== null
@@ -127,13 +135,14 @@ function mockIntake(requestId: string, rawText: string): PlanRequest {
 export async function runIntake(
   requestId: string,
   rawText: string,
-  existingEnvId: string | null
+  existingEnvId: string | null,
+  planOnly: boolean
 ): Promise<{ value: PlanRequest; rawResponse: string; mocked: boolean }> {
   return runLLMJson({
     schema: PlanRequestSchema,
     system: SYSTEM_PROMPT,
-    user: buildUserPrompt(requestId, rawText, existingEnvId),
-    mock: () => mockIntake(requestId, rawText),
+    user: buildUserPrompt(requestId, rawText, existingEnvId, planOnly),
+    mock: () => mockIntake(requestId, rawText, planOnly),
     node: "intake",
   });
 }

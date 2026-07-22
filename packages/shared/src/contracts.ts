@@ -102,6 +102,15 @@ export const ManagedControlSchema = z.object({
 });
 export type ManagedControl = z.infer<typeof ManagedControlSchema>;
 
+/** One AWS alternative the model weighed before recommending a control — surfaces the "why not X" reasoning a real solutions architect would give, not just the winning choice. */
+export const ArchitectureAlternativeSchema = z.object({
+  option: z.string(),
+  pros: z.string(),
+  cons: z.string(),
+  rejected_because: z.string().nullable(),
+});
+export type ArchitectureAlternative = z.infer<typeof ArchitectureAlternativeSchema>;
+
 export const ArchitectureRecommendationSchema = z.object({
   enterprise_context: EnterpriseContextSchema,
   archetype: PlatformArchetypeSchema,
@@ -112,6 +121,8 @@ export const ArchitectureRecommendationSchema = z.object({
   managed_controls: z.array(ManagedControlSchema),
   compliance_overlay: z.array(ComplianceTargetSchema),
   total_controls_cost_usd_monthly: z.number(),
+  /** Alternatives considered and rejected for controls with a genuine real-world choice (e.g. Aurora Global Database vs. cross-region read replicas vs. DynamoDB Global Tables). Optional/empty for controls with no meaningful alternative. */
+  alternatives_considered: z.array(ArchitectureAlternativeSchema).default([]),
 });
 export type ArchitectureRecommendation = z.infer<typeof ArchitectureRecommendationSchema>;
 
@@ -136,6 +147,8 @@ export const PlanRequestSchema = z.object({
     max_memory_gb: z.number(),
   }),
   existing_env_id: z.string().nullable().optional(),
+  /** Pass-through UI flag from the request submission form ("Just plan this" vs "Plan + deploy") — intake echoes this back unchanged, it is never inferred from raw_text. */
+  plan_only: z.boolean().default(false),
   notes: z.array(z.string()).optional(),
   feasible_input: z.boolean(),
   infeasibility_reason: z.string().nullable().optional(),
@@ -428,10 +441,14 @@ export type AuditEvent = z.infer<typeof AuditEventSchema>;
 export const RunStatusSchema = z.enum([
   "running",
   "awaiting_approval",
+  /** Plan-only track: paused for human review of the plan itself, no IaC/deploy exists for this run and no auto-reject timeout applies. */
+  "awaiting_plan_review",
   "deployed",
   "failed",
   "rolled_back",
   "refused",
+  /** Plan-only track terminal state: human accepted the plan via "accept_plan" — no deployment ever happened. */
+  "plan_ready",
 ]);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
@@ -456,7 +473,7 @@ export const EnvironmentSchema = z.object({
 });
 export type EnvironmentRecord = z.infer<typeof EnvironmentSchema>;
 
-export const DecisionActionSchema = z.enum(["approve", "reject", "edit"]);
+export const DecisionActionSchema = z.enum(["approve", "reject", "edit", "accept_plan"]);
 export type DecisionAction = z.infer<typeof DecisionActionSchema>;
 
 export const DecisionSchema = z.object({
@@ -499,6 +516,7 @@ export const WsEventSchema = z.object({
     "node_started",
     "node_finished",
     "awaiting_approval",
+    "awaiting_plan_review",
     "log_line",
     "run_finished",
   ]),

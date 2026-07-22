@@ -18,6 +18,27 @@ Hard stop before any deployment. The graph pauses (`interrupt_before=["deploy"]`
 - Decision is written to the audit store **before** the graph resumes — the approval record can never be lost even if deploy crashes.
 - Timeout: no decision in 30 min → run auto-expires as `rejected(timeout)` (nothing dangling).
 
+## Plan-only review gate — not in the original agent set
+
+When the request was submitted with `plan_only=true` (`CONTRACTS.md` §1), the pipeline stops after the
+planner (plus `compliance_check` in Enterprise Architecture Advisor mode) at a **separate** gate instead of
+this one — `RunStatus="awaiting_plan_review"`, not `"awaiting_approval"`. No `iac_generator`,
+`policy_validator`, or `deploy`/`verify` ever runs for this run, so there is nothing to show beyond the plan
+and (when applicable) the `ArchitectureRecommendation`.
+
+Two differences from the deploy gate above:
+1. **No timeout.** `scheduleApprovalTimeout` is never called for this status — a plan-only run has nothing
+   dangling to force a decision about, so it can sit under review indefinitely. The existing 30-min
+   auto-reject timeout is unchanged and still applies only to `"awaiting_approval"`.
+2. **Two actions instead of three**: `accept_plan` (closes the run out with a report, `RunStatus="plan_ready"`,
+   no deployment ever happens) and `reject` with a comment (identical mechanism to "Reject with comment"
+   above — re-runs the planner with the feedback, returns to this same gate). There is no `edit`/`approve`
+   equivalent here since there's no IaC to edit or deploy to approve.
+
+This exists for requests that are inherently scoping/estimation exercises — a 3-person startup idea or a
+500-engineer/20-team organization sizing conversation — where generating deployable IaC and dangling a
+deploy decision would be premature.
+
 ## Demo choreography
 This is the money moment. Pause here, read the reasoning aloud, point at the diff, click Approve, and let the room watch containers come up. For UC-8's refusal variant, this gate is never even reached — highlight that in the audit timeline.
 

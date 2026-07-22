@@ -15,11 +15,18 @@ All inter-agent messages are one of these four JSON objects. Pydantic models in 
   "expected_load": { "rps": 500, "concurrent_users": null },
   "environment": "staging",
   "operation": "create",
-  "constraints": { "target": "compose", "max_memory_gb": 8 }
+  "constraints": { "target": "compose", "max_memory_gb": 8 },
+  "plan_only": false
 }
 ```
 
 `operation`: `create | modify | destroy` — UC-7 uses `modify` with `existing_env_id`.
+
+`plan_only` — not in the original agent set. A pass-through UI flag ("Just plan this" vs "Plan + deploy")
+set at request submission, never inferred by intake from wording. When `true`, the pipeline stops after the
+planner (plus `compliance_check` in Enterprise Architecture Advisor mode) at a no-timeout review gate — no
+`iac_generator`, `policy_validator`, or `deploy`/`verify` ever runs. See the "Plan-only review gate" section
+of `04-approval-gate.md`.
 
 ## 2. CapacityPlan  (planner → iac_generator, shown to human)
 
@@ -91,10 +98,32 @@ since org-scale/criticality/compliance don't vary by tier).
       { "name": "AWS Shield Advanced", "category": "dr_ha", "triggered_by": "criticality", "reasoning": "very_high band requires DDoS protection beyond the AWS Shield Standard default.", "compliance_tags": ["PCI-DSS-6.6"], "estimated_cost_usd_monthly": 3000, "terraform_bundle_template_id": "tf-shield-advanced-v1" }
     ],
     "compliance_overlay": ["pci_dss"],
-    "total_controls_cost_usd_monthly": 3000
+    "total_controls_cost_usd_monthly": 3000,
+    "alternatives_considered": [
+      {
+        "option": "AWS Shield Advanced",
+        "pros": "24/7 DDoS Response Team, cost protection during an attack, deep WAF/CloudFront/Route 53 integration.",
+        "cons": "Meaningful fixed monthly cost plus a 1-year commitment.",
+        "rejected_because": null
+      },
+      {
+        "option": "AWS Shield Standard (default, free)",
+        "pros": "No additional cost, automatically active on every account.",
+        "cons": "No response-team access, no cost protection, less coverage against sophisticated attacks.",
+        "rejected_because": "very_high criticality on a payments-adjacent workload warrants the response-team SLA Standard doesn't include."
+      }
+    ]
   }
 }
 ```
+
+`alternatives_considered` — not in the original agent set. For controls with a genuine real-world
+substitute (chiefly `dr_ha`/`data_protection`/`network` category), the planner names 2-3 concrete
+alternatives it weighed, with pros/cons and a `rejected_because` tied to the request's actual numbers
+(RPO/RTO, expected users, budget) — this is what turns a fixed lookup table into an explanation a human
+reviewer would actually trust. Empty for controls with no meaningful alternative (e.g. AWS Organizations).
+See `nodes/enterpriseRulesEngine.ts`'s `ALTERNATIVES_BY_CONTROL_NAME` (mock-mode parity) and `planner.ts`'s
+`ENTERPRISE_MODE_NOTE` (real-LLM instruction) for the exact framing.
 
 `org_scale` (`solo|team|scale_up|enterprise`, by team size band) selects a `PlatformArchetype` — the
 *platform* choice (ECS vs EKS, single- vs multi-account). `criticality_band` (`low|medium|high|very_high`,

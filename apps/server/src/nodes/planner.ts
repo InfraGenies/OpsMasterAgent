@@ -33,7 +33,7 @@ const SCHEMA_SHAPE = `{
   "recommended_tier": "economy" | "balanced" | "high_availability",
   "feasible": boolean,
   "infeasibility_reason": "string | null",
-  "architecture_recommendation": "OMIT this field entirely unless enterprise_mode=true (see ENTERPRISE MODE note below)"
+  "architecture_recommendation": "OMIT this field entirely unless enterprise_mode=true (see ENTERPRISE MODE note below) — when present, include an alternatives_considered array (see note)"
 }`;
 
 const AWS_TARGET_NOTE =
@@ -46,9 +46,11 @@ const AWS_TARGET_NOTE =
 
 const ENTERPRISE_MODE_NOTE =
   "\n\nenterprise_mode=true: this is a business-description request (compliance/scale/DR-driven), not a " +
-  "single-app sizing request. Produce exactly ONE \"balanced\"-tier option, and populate " +
-  "architecture_recommendation using this deterministic reasoning framework (mirror it exactly — a real " +
-  "reviewer will check the arithmetic): " +
+  "single-app sizing request. You are reasoning as a 30-year AWS Solutions Architect would on a real " +
+  "engagement: state the trade-offs you weighed before recommending something, not just the final answer. " +
+  "Produce exactly ONE \"balanced\"-tier option, and populate architecture_recommendation as follows.\n\n" +
+  "FLOOR (do not deviate from this scoring — it is the auditability guarantee a real reviewer checks the " +
+  "arithmetic against): " +
   "(1) org_scale from enterprise_context.team_size — solo <=3, team 4-49, scale_up 50-249, enterprise 250+, " +
   "defaulting to solo if unstated — maps to a PlatformArchetype (solo_ecs_fargate / team_ecs_fargate_ha / " +
   "scale_up_eks / enterprise_eks_landing_zone); " +
@@ -60,8 +62,20 @@ const ENTERPRISE_MODE_NOTE =
   "(3) each compliance_target (pci_dss/hipaa) mandates its own fixed control set independent of the other " +
   "two axes (a compliance target can require a control the criticality band alone wouldn't yet). " +
   "org_scale and criticality are independent — a small team can score very_high criticality, and a large " +
-  "org can score low criticality. Union all controls, dedupe by name, explain WHY each fired in its " +
-  "reasoning field. This must generalize to any input combination, not just canned examples.";
+  "org can score low criticality. Union all controls, dedupe by name. This must generalize to any input " +
+  "combination, not just canned examples.\n\n" +
+  "REASONING DEPTH (this is the part a fixed lookup table can't do — do this genuinely, not by rote): " +
+  "for every control you recommend in the dr_ha, data_protection, or network category (Aurora Global " +
+  "Database, Shield Advanced, Route 53 failover routing, WAF, KMS, etc.), populate " +
+  "architecture_recommendation.alternatives_considered with 2-3 REAL, named AWS (or well-known third-party) " +
+  "alternatives you weighed and rejected for that specific control — e.g. for a cross-region-replicated " +
+  "primary data store: Aurora Global Database vs. cross-region read replicas vs. DynamoDB Global Tables. " +
+  "For each alternative give concrete pros, concrete cons, and a one-sentence rejected_because tied to the " +
+  "actual numbers in this request (RPO/RTO minutes, expected_users, budget signals) — not generic praise. " +
+  "Do not fabricate alternatives with no real basis; skip alternatives_considered entries for controls " +
+  "that genuinely have no meaningful substitute (e.g. AWS Organizations for multi-account governance). " +
+  "archetype_reasoning and criticality_reasoning should read like a consultant's write-up: cite the " +
+  "specific numbers from enterprise_context that drove the conclusion, not just the band name.";
 
 function buildUserPrompt(
   planRequest: PlanRequest,

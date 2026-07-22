@@ -12,7 +12,7 @@ import { startRun, submitDecision } from "./orchestrator/pipeline.js";
 import { getStore } from "./store/index.js";
 import type { CapacityPlan, ComplianceReport, IaCPayload, PolicyReport } from "@ops-master/shared";
 
-async function waitForStatus(requestId: string, statuses: string[], timeoutMs = 30000): Promise<string> {
+async function waitForStatus(requestId: string, statuses: string[], timeoutMs = 120000): Promise<string> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const run = await getStore().getRun(requestId);

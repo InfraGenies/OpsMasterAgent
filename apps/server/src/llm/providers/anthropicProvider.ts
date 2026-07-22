@@ -19,7 +19,11 @@ export const anthropicProvider: LLMProvider = {
   async completeRaw(system: string, user: string): Promise<string> {
     const res = await getClient().messages.create({
       model: env.ANTHROPIC_MODEL,
-      max_tokens: 4096,
+      // 8192 (was 4096): the Enterprise Architecture Advisor's
+      // alternatives_considered reasoning (planner.ts's ENTERPRISE_MODE_NOTE)
+      // meaningfully grows the planner's JSON output — headroom avoids
+      // truncated/invalid JSON burning the one runLLMJson retry.
+      max_tokens: 8192,
       system,
       messages: [{ role: "user", content: user }],
     });

@@ -22,11 +22,19 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function createRun(rawText: string, existingEnvId?: string | null): Promise<{ request_id: string }> {
+export function createRun(
+  rawText: string,
+  planOnly = false,
+  existingEnvId?: string | null
+): Promise<{ request_id: string }> {
   return fetch(`${BASE}/runs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ raw_text: rawText, existing_env_id: existingEnvId ?? null }),
+    body: JSON.stringify({
+      raw_text: rawText,
+      existing_env_id: existingEnvId ?? null,
+      mode: planOnly ? "plan_only" : "plan_and_deploy",
+    }),
   }).then((res) => json<{ request_id: string }>(res));
 }
 

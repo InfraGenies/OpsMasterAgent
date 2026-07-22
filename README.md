@@ -148,6 +148,15 @@ but no code implemented them. See each `*.md` for exactly what it checks, what i
 and why (`readiness_check`'s doc also flags a separate pre-existing gap in how `modify` names its compose
 project, found while building its drift check — not fixed there, noted as a follow-up).
 
+A third addition beyond the spec: a **plan-only track** (`PlanRequest.plan_only`, `RunStatus`
+`awaiting_plan_review`/`plan_ready`, `orchestrator/pipeline.ts: reachPlanReviewGate`/`finalizePlanOnly`, UI:
+`web/src/components/PlanReviewGate.tsx`). Set via a UI toggle at submission, it stops the pipeline after the
+planner (plus `compliance_check` in Enterprise Architecture Advisor mode) — no `iac_generator`,
+`policy_validator`, or `deploy`/`verify` ever runs, and unlike the deploy-approval gate there is no 30-minute
+auto-reject timeout, since a plan-only run has nothing dangling to force a decision about. This exists for
+scoping/estimation requests (a small-team app idea, a large-org sizing conversation) where generating
+deployable IaC would be premature — see `04-approval-gate.md`'s "Plan-only review gate" section.
+
 ## Where each spec agent lives in code
 
 | Spec file | Code |

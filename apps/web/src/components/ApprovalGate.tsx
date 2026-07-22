@@ -40,11 +40,8 @@ export function ApprovalGate({
     <div className="rounded-xl border border-amber-600/50 bg-gradient-to-b from-amber-950/40 to-slate-900/60 p-4 space-y-3 shadow-lg shadow-amber-950/20">
       <div className="flex items-center flex-wrap gap-2">
         <span className="inline-flex items-center gap-2 text-amber-300 font-semibold text-sm">
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-60" />
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-400" />
-          </span>
-          Human approval required
+          <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
+          Ready for your review
         </span>
         <span
           className={`status-badge ${
@@ -145,6 +142,10 @@ export function ApprovalGate({
           </button>
         )}
       </div>
+      <p className="text-xs text-slate-500">
+        Rejecting with a comment re-runs the planner with your feedback — iterate as many times as you like
+        before approving. Nothing deploys until you click Approve &amp; Deploy.
+      </p>
     </div>
   );
 }

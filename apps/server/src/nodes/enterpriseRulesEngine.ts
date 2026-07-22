@@ -1,4 +1,5 @@
 import type {
+  ArchitectureAlternative,
   ArchitectureRecommendation,
   CapacityPlanOption,
   ComplianceTarget,
@@ -372,6 +373,79 @@ function complianceOverlayControls(targets: ComplianceTarget[]): ManagedControl[
 }
 
 // ---------------------------------------------------------------------------
+// Mock-mode parity for ArchitectureRecommendation.alternatives_considered: the
+// real-LLM path (planner.ts's ENTERPRISE_MODE_NOTE) is asked to reason about
+// named AWS alternatives it rejected for dr_ha/data_protection/network
+// controls; this static table gives the deterministic mock path the same
+// shape of output for the controls where a genuine alternative exists, so
+// mock and real-LLM behavior stay consistent (per this repo's convention:
+// mock functions must track prompt behavior, not just be stub placeholders).
+// ---------------------------------------------------------------------------
+
+const ALTERNATIVES_BY_CONTROL_NAME: Record<string, ArchitectureAlternative[]> = {
+  "Aurora Global Database": [
+    {
+      option: "Aurora Global Database",
+      pros: "Sub-second storage-based replication to a secondary region, promotable read replica for a fast regional failover, standard MySQL/Postgres compatibility with no app rewrite.",
+      cons: "Aurora-specific pricing (replicated I/O + secondary cluster compute), failover to the secondary region is fast but not instant/automatic without Route 53 or a custom health check wired in.",
+      rejected_because: null,
+    },
+    {
+      option: "Cross-region read replicas (standard RDS)",
+      pros: "Cheaper than Aurora Global Database, simpler mental model, works with any RDS engine.",
+      cons: "Asynchronous replication lag is typically seconds-to-minutes, not sub-second; promoting a replica to primary is a manual/scripted operation, not push-button.",
+      rejected_because: "Replication lag and manual promotion can't reliably meet an RPO under 5 minutes / RTO under 15 minutes at this criticality.",
+    },
+    {
+      option: "DynamoDB Global Tables",
+      pros: "Multi-region active-active out of the box, effectively meets any RPO/RTO target, fully managed.",
+      cons: "Forces a NoSQL data model — any existing relational schema/queries need a rewrite, and multi-region write conflicts need application-level resolution.",
+      rejected_because: "Requires a full data-model migration away from the relational schema this workload already assumes; not a drop-in replacement.",
+    },
+  ],
+  "AWS Shield Advanced": [
+    {
+      option: "AWS Shield Advanced",
+      pros: "24/7 DDoS Response Team access, cost protection against scaling charges incurred during an attack, deep integration with WAF/CloudFront/Route 53.",
+      cons: "Meaningful fixed monthly cost plus a 1-year commitment, only pays for itself at this criticality/traffic level.",
+      rejected_because: null,
+    },
+    {
+      option: "AWS Shield Standard (default, free)",
+      pros: "No additional cost, automatically active on every AWS account, covers common network-layer floods.",
+      cons: "No response team access, no cost protection, materially less coverage against sophisticated/application-layer attacks.",
+      rejected_because: "Very-high criticality on a payments-adjacent workload warrants the response-team SLA and cost protection Standard doesn't include.",
+    },
+  ],
+  "Amazon Route 53 (health-check failover)": [
+    {
+      option: "Route 53 health-check failover routing",
+      pros: "DNS-layer failover with health checks already integrated with most AWS origin types, low cost, no extra compute.",
+      cons: "DNS TTL/caching means failover isn't instantaneous for every client — some clients may hold a stale record briefly.",
+      rejected_because: null,
+    },
+    {
+      option: "AWS Global Accelerator",
+      pros: "Anycast IP means failover is effectively instant with no DNS caching delay, also improves baseline latency via the AWS backbone.",
+      cons: "Higher fixed monthly cost, adds another piece of network infrastructure to operate.",
+      rejected_because: "Route 53 failover meets the stated RTO at materially lower cost; Global Accelerator's instant-failover edge isn't needed to hit a 15-minute RTO.",
+    },
+  ],
+};
+
+function alternativesForControls(controls: ManagedControl[]): ArchitectureAlternative[] {
+  const seen = new Set<string>();
+  const result: ArchitectureAlternative[] = [];
+  for (const c of controls) {
+    const entries = ALTERNATIVES_BY_CONTROL_NAME[c.name];
+    if (!entries || seen.has(c.name)) continue;
+    seen.add(c.name);
+    result.push(...entries);
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Composition
 // ---------------------------------------------------------------------------
 
@@ -420,6 +494,7 @@ export function buildArchitectureRecommendation(ctx: EnterpriseContext): Archite
     managed_controls: priced,
     compliance_overlay: ctx.compliance_targets,
     total_controls_cost_usd_monthly: cost.totalUsdMonthly,
+    alternatives_considered: alternativesForControls(priced),
   };
 }
 

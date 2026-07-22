@@ -341,11 +341,16 @@ async function reachApprovalGate(
   scheduleApprovalTimeout(requestId);
 }
 
-async function runIntakeThroughGate(requestId: string, rawText: string, existingEnvId: string | null): Promise<void> {
+async function runIntakeThroughGate(
+  requestId: string,
+  rawText: string,
+  existingEnvId: string | null,
+  planOnly: boolean
+): Promise<void> {
   const store = getStore();
 
   broadcastEvent("node_started", requestId, "intake");
-  const intakeResult = await runIntake(requestId, rawText, existingEnvId);
+  const intakeResult = await runIntake(requestId, rawText, existingEnvId, planOnly);
   await logAudit(store, {
     request_id: requestId,
     node: "intake",
@@ -392,10 +397,14 @@ async function runIntakeThroughGate(requestId: string, rawText: string, existing
     return;
   }
 
+  if (planRequest.plan_only) {
+    await reachPlanReviewGate(requestId, planRequest, plannerResult.value);
+    return;
+  }
   await reachApprovalGate(requestId, planRequest, plannerResult.value, existing);
 }
 
-export async function startRun(rawText: string, existingEnvId: string | null): Promise<string> {
+export async function startRun(rawText: string, existingEnvId: string | null, planOnly = false): Promise<string> {
   const store = getStore();
   const requestId = generateRequestId();
   await store.createRun({
@@ -407,13 +416,75 @@ export async function startRun(rawText: string, existingEnvId: string | null): P
     finished_at: null,
   });
 
-  runIntakeThroughGate(requestId, rawText, existingEnvId).catch(async (err) => {
+  runIntakeThroughGate(requestId, rawText, existingEnvId, planOnly).catch(async (err) => {
     console.error(`[pipeline] intake phase failed for ${requestId}:`, err);
     await store.updateRunStatus(requestId, "failed", new Date().toISOString()).catch(() => {});
     broadcastEvent("run_finished", requestId, undefined, { status: "failed", error: String(err) });
   });
 
   return requestId;
+}
+
+// ---------------------------------------------------------------------------
+// Plan-only track: stop after the planner, no IaC/deploy ever generated.
+// No approval timeout applies here — see submitDecision/reachPlanReviewGate.
+// ---------------------------------------------------------------------------
+
+/** Plan-only equivalent of reachApprovalGate: runs compliance_check (enterprise-mode only, same as the deploy track) then pauses for human review with no timeout and no IaC/deploy ever generated. */
+async function reachPlanReviewGate(requestId: string, planRequest: PlanRequest, fullPlan: CapacityPlan): Promise<void> {
+  const store = getStore();
+
+  if (fullPlan.architecture_recommendation) {
+    broadcastEvent("node_started", requestId, "compliance_check");
+    const compliance = runComplianceCheck(fullPlan.architecture_recommendation, requestId);
+    await logAudit(store, {
+      request_id: requestId,
+      node: "compliance_check",
+      actor: "agent",
+      status: compliance.passed ? "success" : "failure",
+      detail: compliance.passed
+        ? `${compliance.findings.length} control(s) checked across ${compliance.frameworks.join(", ") || "no framework"}, no unresolved gaps`
+        : `${compliance.gap_count} gap(s) found across ${compliance.frameworks.join(", ")}`,
+      output: compliance,
+    });
+    broadcastEvent("node_finished", requestId, "compliance_check", compliance);
+  }
+
+  await store.updateRunStatus(requestId, "awaiting_plan_review");
+  await logAudit(store, {
+    request_id: requestId,
+    node: "approval_gate",
+    actor: "agent",
+    status: "pending",
+    detail: "awaiting human plan review (plan-only — no deployment)",
+  });
+  broadcastEvent("awaiting_plan_review", requestId, "approval_gate", { plan: fullPlan });
+  // No scheduleApprovalTimeout call: a plan-only run has nothing dangling to
+  // force a decision about, so it can sit under review indefinitely.
+  void planRequest;
+}
+
+/** Human accepted the plan via "accept_plan" — closes the run out with a report, no deploy ever happens. */
+async function finalizePlanOnly(requestId: string): Promise<void> {
+  const store = getStore();
+  const planRequest = await loadLatestNodeOutput<PlanRequest>(store, requestId, "intake");
+  const fullPlan = await loadLatestNodeOutput<CapacityPlan>(store, requestId, "planner");
+  if (!planRequest || !fullPlan) {
+    await refuseRun(requestId, "internal error: lost pipeline state before finalizing plan");
+    return;
+  }
+  const plan = selectOption(fullPlan, fullPlan.recommended_tier);
+
+  await store.updateRunStatus(requestId, "plan_ready", new Date().toISOString());
+  const run = await store.getRun(requestId);
+  const reportMd = await runReport({
+    run: run!,
+    planRequest,
+    capacityPlan: plan,
+    auditEvents: await store.listAuditEvents(requestId),
+  });
+  await logAudit(store, { request_id: requestId, node: "report", actor: "agent", status: "success", detail: "plan accepted, no deployment", output: reportMd });
+  broadcastEvent("run_finished", requestId, "report", { status: "plan_ready", report: reportMd });
 }
 
 // ---------------------------------------------------------------------------
@@ -509,6 +580,10 @@ async function reworkPlan(
     plan = plannerResult.value;
   }
 
+  if (planRequest.plan_only) {
+    await reachPlanReviewGate(requestId, planRequest, plan);
+    return;
+  }
   await reachApprovalGate(requestId, planRequest, plan, existing);
 }
 
@@ -612,11 +687,11 @@ export async function submitDecision(
   const store = getStore();
   const run = await store.getRun(requestId);
   if (!run) throw new HttpError(404, "run not found");
-  if (run.status !== "awaiting_approval") {
-    throw new HttpError(409, `run is not awaiting approval (status=${run.status})`);
+  if (run.status !== "awaiting_approval" && run.status !== "awaiting_plan_review") {
+    throw new HttpError(409, `run is not awaiting a decision (status=${run.status})`);
   }
 
-  clearApprovalTimeout(requestId);
+  clearApprovalTimeout(requestId); // no-op if never armed (plan-only runs never schedule one)
   await store.writeDecision({ request_id: requestId, action, comment, actor, ts: new Date().toISOString() });
   await logAudit(store, {
     request_id: requestId,
@@ -630,6 +705,15 @@ export async function submitDecision(
   if (action === "approve") {
     runDeployThroughReport(requestId).catch(async (err) => {
       console.error(`[pipeline] deploy phase failed for ${requestId}:`, err);
+      await store.updateRunStatus(requestId, "failed", new Date().toISOString()).catch(() => {});
+      broadcastEvent("run_finished", requestId, undefined, { status: "failed", error: String(err) });
+    });
+    return;
+  }
+
+  if (action === "accept_plan") {
+    finalizePlanOnly(requestId).catch(async (err) => {
+      console.error(`[pipeline] plan finalization failed for ${requestId}:`, err);
       await store.updateRunStatus(requestId, "failed", new Date().toISOString()).catch(() => {});
       broadcastEvent("run_finished", requestId, undefined, { status: "failed", error: String(err) });
     });

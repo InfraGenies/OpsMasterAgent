@@ -81,6 +81,42 @@ export function ArchitectureRecommendationView({ rec }: { rec: ArchitectureRecom
           </p>
         )}
       </div>
+
+      {rec.alternatives_considered.length > 0 && (
+        <div className="space-y-2 pt-1">
+          <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Alternatives considered</h4>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {rec.alternatives_considered.map((alt, i) => (
+              <div
+                key={`${alt.option}-${i}`}
+                className={`rounded-lg p-3 border text-xs space-y-1.5 ${
+                  alt.rejected_because
+                    ? "border-slate-800/60 bg-slate-950/40"
+                    : "border-emerald-800/60 bg-emerald-950/20"
+                }`}
+              >
+                <div className="font-semibold text-slate-100 flex items-center gap-1.5">
+                  {!alt.rejected_because && <span className="text-emerald-400">✓</span>}
+                  {alt.option}
+                </div>
+                <p className="text-emerald-300/80">
+                  <span className="text-slate-500">Pros: </span>
+                  {alt.pros}
+                </p>
+                <p className="text-rose-300/80">
+                  <span className="text-slate-500">Cons: </span>
+                  {alt.cons}
+                </p>
+                {alt.rejected_because && (
+                  <p className="text-slate-400 italic border-t border-slate-800/60 pt-1.5">
+                    Rejected: {alt.rejected_because}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

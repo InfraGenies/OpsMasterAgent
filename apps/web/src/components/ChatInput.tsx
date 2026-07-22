@@ -1,12 +1,19 @@
 import { useState } from "react";
 import { USE_CASES } from "../useCases";
 
-export function ChatInput({ onSubmit, disabled }: { onSubmit: (text: string) => void; disabled: boolean }) {
+export function ChatInput({
+  onSubmit,
+  disabled,
+}: {
+  onSubmit: (text: string, planOnly: boolean) => void;
+  disabled: boolean;
+}) {
   const [text, setText] = useState("");
+  const [planOnly, setPlanOnly] = useState(false);
 
   function submit() {
     if (!text.trim() || disabled) return;
-    onSubmit(text.trim());
+    onSubmit(text.trim(), planOnly);
     setText("");
   }
 
@@ -40,8 +47,18 @@ export function ChatInput({ onSubmit, disabled }: { onSubmit: (text: string) => 
           </button>
         ))}
       </div>
+      <label className="flex items-center gap-2 text-sm text-slate-300 select-none cursor-pointer">
+        <input
+          type="checkbox"
+          className="accent-indigo-500 w-4 h-4"
+          checked={planOnly}
+          onChange={(e) => setPlanOnly(e.target.checked)}
+        />
+        Just plan this — no deployment
+        <span className="text-slate-500 text-xs">(review the plan/estimate only, no IaC or deploy)</span>
+      </label>
       <button className="btn-primary w-full text-base py-2.5" onClick={submit} disabled={disabled || !text.trim()}>
-        {disabled ? "Submitting…" : "Submit request"}
+        {disabled ? "Submitting…" : planOnly ? "Submit for planning" : "Submit request"}
         <span className="text-indigo-200 text-sm font-normal">Ctrl+↵</span>
       </button>
     </div>

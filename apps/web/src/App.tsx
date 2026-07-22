@@ -10,6 +10,7 @@ import { ChatInput } from "./components/ChatInput";
 import { ComplianceReportView } from "./components/ComplianceReportView";
 import { IacFileViewer } from "./components/IacFileViewer";
 import { PipelineStepper } from "./components/PipelineStepper";
+import { PlanReviewGate } from "./components/PlanReviewGate";
 import { PolicyReportView } from "./components/PolicyReportView";
 import { ReadinessReportView } from "./components/ReadinessReportView";
 import { ReportView } from "./components/ReportView";
@@ -72,10 +73,10 @@ export function App() {
 
   useRunSocket(handleWsEvent);
 
-  async function handleSubmit(text: string) {
+  async function handleSubmit(text: string, planOnly: boolean) {
     setSubmitting(true);
     try {
-      const { request_id } = await api.createRun(text);
+      const { request_id } = await api.createRun(text, planOnly);
       refreshRuns();
       setSelectedId(request_id);
     } catch (err) {
@@ -85,7 +86,11 @@ export function App() {
     }
   }
 
-  async function handleDecision(action: "approve" | "reject" | "edit", comment: string | null, patch?: Record<string, unknown>) {
+  async function handleDecision(
+    action: "approve" | "reject" | "edit" | "accept_plan",
+    comment: string | null,
+    patch?: Record<string, unknown>
+  ) {
     if (!selectedId) return;
     try {
       await api.submitDecision(selectedId, action, comment, "operator (UI)", patch);
@@ -96,7 +101,7 @@ export function App() {
     }
   }
 
-  const report = detail?.run.status && ["deployed", "failed", "rolled_back", "refused"].includes(detail.run.status)
+  const report = detail?.run.status && ["deployed", "failed", "rolled_back", "refused", "plan_ready"].includes(detail.run.status)
     ? reportFromEvents(events)
     : null;
 
@@ -199,6 +204,14 @@ export function App() {
                 plan={detail.capacity_plan}
                 iac={detail.iac_payload}
                 policy={detail.policy_report}
+                onDecision={handleDecision}
+              />
+            )}
+
+            {detail.run.status === "awaiting_plan_review" && detail.capacity_plan && (
+              <PlanReviewGate
+                key={detail.capacity_plan.recommended_tier}
+                plan={detail.capacity_plan}
                 onDecision={handleDecision}
               />
             )}
