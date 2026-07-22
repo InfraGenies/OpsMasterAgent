@@ -42,4 +42,5 @@ export const env = {
 
   SERVER_ROOT,
   PROMPTS_DIR: path.resolve(__dirname, "prompts"),
+  SKILLS_DIR: path.resolve(__dirname, "skills"),
 };

@@ -122,8 +122,14 @@ substitute (chiefly `dr_ha`/`data_protection`/`network` category), the planner n
 alternatives it weighed, with pros/cons and a `rejected_because` tied to the request's actual numbers
 (RPO/RTO, expected users, budget) — this is what turns a fixed lookup table into an explanation a human
 reviewer would actually trust. Empty for controls with no meaningful alternative (e.g. AWS Organizations).
-See `nodes/enterpriseRulesEngine.ts`'s `ALTERNATIVES_BY_CONTROL_NAME` (mock-mode parity) and `planner.ts`'s
-`ENTERPRISE_MODE_NOTE` (real-LLM instruction) for the exact framing.
+See `nodes/enterpriseRulesEngine.ts`'s `ALTERNATIVES_BY_CONTROL_NAME` (mock-mode parity) and the
+`compliance-and-dr-reasoning` skill (real-LLM instruction) for the exact framing.
+
+`client_classification` — not in the original agent set. A free-form, plain-English description of who this
+client actually is (e.g. "seed-stage fintech startup", "regulated healthcare enterprise") — coexists with,
+rather than replaces, the structural `org_scale`/`archetype`/`criticality_band` enums those fields still
+drive `enterpriseRulesEngine.ts`'s lookup tables. Exists so genuine per-request judgment shows through even
+though the structural fields stay enum-constrained for auditability and UI/backend lookups.
 
 `org_scale` (`solo|team|scale_up|enterprise`, by team size band) selects a `PlatformArchetype` — the
 *platform* choice (ECS vs EKS, single- vs multi-account). `criticality_band` (`low|medium|high|very_high`,
@@ -149,7 +155,18 @@ controls a framework requires regardless of the other two axes. All three compos
 }
 ```
 
-`format`: `compose | terraform | k8s`. `template_id` MUST reference a vetted template in `templates/` — the deploy agent refuses payloads with unknown template IDs. For `modify` operations, `diff_from` holds the previous env's files and the UI renders a diff.
+`format`: `compose | terraform | k8s`. `template_id` normally references a vetted template in `templates/` —
+the deploy agent refuses payloads with unknown template IDs. **Divergence from the original spec**: `template_id`
+also accepts the sentinel value `"freeform"` — not in the original agent set. When nothing in the catalogue
+covers a request's topology, `iac_generator` may write IaC files directly instead of only ever refusing with
+`no_template` (see `03-iac-generator.md` and `skills/novel-requirement-reasoning.md`). The LLM's output shape
+for this path is `{ "format": "compose" | "terraform", "files": [...] }` — notably it never includes
+`apply_command`/`rollback_command`; those are always derived by backend code from `format` + the project
+name, matching the exact literal strings `nodes/commandAllowList.ts` already expects (confirmed
+format-generic, not template-specific, so no allow-list change was needed for this addition). A freeform
+payload is flagged distinctly in the UI (`template_id === "freeform"`) so a human reviewer knows it wasn't
+produced by a pre-validated rendering path. For `modify` operations, `diff_from` holds the previous env's
+files and the UI renders a diff.
 
 ## 3b. PolicyReport  (iac_generator ⇄ policy_validator self-correction loop, then → approval gate)
 

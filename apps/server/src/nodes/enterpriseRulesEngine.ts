@@ -446,6 +446,39 @@ function alternativesForControls(controls: ManagedControl[]): ArchitectureAltern
 }
 
 // ---------------------------------------------------------------------------
+// Mock-mode parity for ArchitectureRecommendation.client_classification: the
+// real-LLM path (compliance-and-dr-reasoning.md) is asked to describe the
+// client freely in plain English, not from a fixed enum. This deterministic
+// version composes the same idea from the axes already computed, so the
+// mock path always populates the field too.
+// ---------------------------------------------------------------------------
+
+const ORG_SCALE_LABEL: Record<OrgScale, string> = {
+  solo: "solo/small-team",
+  team: "small-to-mid-team",
+  scale_up: "scale-up-organization",
+  enterprise: "large-enterprise",
+};
+
+const INDUSTRY_LABEL: Record<EnterpriseContext["industry_domain"], string> = {
+  payments: "fintech/payments",
+  healthcare: "healthcare",
+  retail: "retail",
+  generic: "general-purpose",
+};
+
+const CRITICALITY_LABEL: Record<CriticalityBand, string> = {
+  very_high: "very high-stakes",
+  high: "high-stakes",
+  medium: "moderate-stakes",
+  low: "low-stakes",
+};
+
+function deriveClientClassification(ctx: EnterpriseContext, band: CriticalityBand): string {
+  return `${ORG_SCALE_LABEL[ctx.org_scale]} ${INDUSTRY_LABEL[ctx.industry_domain]} workload, ${CRITICALITY_LABEL[band]}`;
+}
+
+// ---------------------------------------------------------------------------
 // Composition
 // ---------------------------------------------------------------------------
 
@@ -495,6 +528,7 @@ export function buildArchitectureRecommendation(ctx: EnterpriseContext): Archite
     compliance_overlay: ctx.compliance_targets,
     total_controls_cost_usd_monthly: cost.totalUsdMonthly,
     alternatives_considered: alternativesForControls(priced),
+    client_classification: deriveClientClassification(ctx, band),
   };
 }
 

@@ -292,7 +292,9 @@ const composeLbReplicasV1: TemplateDefinition = {
   },
 };
 
-export const TEMPLATES: Record<TemplateId, TemplateDefinition> = {
+// "freeform" is a sentinel template_id for LLM-written files (skills/novel-requirement-reasoning.md),
+// not a real catalog entry — excluded here so TEMPLATES stays exactly the rendered-template catalogue.
+export const TEMPLATES: Record<Exclude<TemplateId, "freeform">, TemplateDefinition> = {
   "compose-single-v1": composeSingleV1,
   "compose-web-db-v1": composeWebDbV1,
   "compose-web-db-cache-v1": composeWebDbCacheV1,
@@ -301,7 +303,7 @@ export const TEMPLATES: Record<TemplateId, TemplateDefinition> = {
 };
 
 export function renderTemplate(
-  templateId: TemplateId,
+  templateId: Exclude<TemplateId, "freeform">,
   plan: Parameters<TemplateDefinition["render"]>[0],
   variables: Record<string, unknown>,
   ctx: RenderContext

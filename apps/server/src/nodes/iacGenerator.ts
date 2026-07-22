@@ -10,14 +10,23 @@ import {
   type PlatformArchetype,
 } from "@ops-master/shared";
 import { loadPrompt } from "../llm/promptLoader.js";
+import { loadSkill } from "../llm/skillLoader.js";
 import { runLLMJson } from "../llm/runLLMJson.js";
 import { renderTemplate, TEMPLATES, templateCatalogSummary } from "../templates/catalog.js";
-import { resolveVariableSecrets } from "../templates/secrets.js";
+import { resolveFreeformSecrets, resolveVariableSecrets } from "../templates/secrets.js";
 import { appServices, cacheService, dbService } from "../templates/types.js";
 import type { TemplateId } from "@ops-master/shared";
 
 const execFileAsync = promisify(execFile);
-const SYSTEM_PROMPT = loadPrompt("03-iac-generator.md");
+// The iac_generator can't know in advance whether a request will match the
+// catalog or fall through to writing files directly, so both IaC-writing
+// skills plus the novel-requirement meta-skill are always appended.
+const SYSTEM_PROMPT = [
+  loadPrompt("03-iac-generator.md"),
+  loadSkill("writing-compose-iac"),
+  loadSkill("writing-terraform-iac"),
+  loadSkill("novel-requirement-reasoning"),
+].join("\n\n");
 
 function buildUserPrompt(plan: CapacityPlanOption, isModify: boolean, hasDiff: boolean, feedback?: string): string {
   const feedbackNote = feedback
@@ -29,7 +38,12 @@ function buildUserPrompt(plan: CapacityPlanOption, isModify: boolean, hasDiff: b
     isModify
       ? `operation=modify.${hasDiff ? " The previous environment's files are held by the backend for diff_from; you do not need to supply them." : ""}`
       : "",
-    `Respond with ONLY JSON, either:\n{ "template_id": "<one of the catalogue ids>", "variables": { ... } }\nor, if nothing in the catalogue fits:\n{ "error": "no_template", "needed": "<describe>" }`,
+    `Respond with ONLY JSON, one of THREE shapes:\n` +
+      `1. Catalog match: { "template_id": "<one of the catalogue ids>", "variables": { ... } }\n` +
+      `2. Freeform (nothing in the catalogue fits — see the writing-compose-iac / writing-terraform-iac / ` +
+      `novel-requirement-reasoning guidance above): { "format": "compose" | "terraform", "files": ` +
+      `[{ "path": "...", "content": "..." }] }\n` +
+      `3. Out of scope entirely: { "error": "no_template", "needed": "<describe>" }`,
     `Variables you may set depending on the template: health_path (string, default "/"), db_name, db_user, db_password (use the literal string "__GENERATE__" for any password — never a literal value). For the tf-ecs-fargate-v1/tf-eks-v1 templates: environment_name (optional, defaults to the project name).`,
   ]
     .filter(Boolean)
@@ -140,6 +154,28 @@ async function validateTerraform(cwd: string): Promise<IaCPayload["validation"]>
   }
 }
 
+/**
+ * apply_command/rollback_command for freeform output — deliberately NOT
+ * derived from anything the LLM said. Copied verbatim from the literal
+ * strings every catalog template already produces (catalog.ts,
+ * terraformCatalog.ts), which are format-generic, not template-specific —
+ * confirmed by commandAllowList.ts's regexes only ever matching on project
+ * name, never template identity. Keeping these identical means no change is
+ * needed to the allow-list for freeform mode to work.
+ */
+function genericCommandsFor(format: "compose" | "terraform", projectName: string): { applyCommand: string; rollbackCommand: string } {
+  if (format === "compose") {
+    return {
+      applyCommand: `docker compose -p ${projectName} up -d --wait`,
+      rollbackCommand: `docker compose -p ${projectName} down -v`,
+    };
+  }
+  return {
+    applyCommand: "terraform init -backend=false -input=false -no-color && terraform plan -input=false -no-color -out=tfplan",
+    rollbackCommand: "n/a — plan-only (apply/destroy are not in the allow-list), so nothing is ever applied and there is nothing to roll back",
+  };
+}
+
 export interface IacGeneratorInput {
   requestId: string;
   projectName: string;
@@ -172,30 +208,68 @@ export async function runIacGenerator(input: IacGeneratorInput): Promise<IacGene
   if ("error" in result.value) {
     return { ok: false, needed: result.value.needed, rawResponse: result.rawResponse, mocked: result.mocked };
   }
-
-  const variables = resolveVariableSecrets(result.value.variables);
-  const rendered = renderTemplate(result.value.template_id, input.plan, variables, {
-    requestId: input.requestId,
-    projectName: input.projectName,
-  });
+  if ("template_id" in result.value && result.value.template_id === "freeform") {
+    // The LLM used the catalog shape but named the freeform sentinel as a
+    // template_id — never legitimate (the prompt only ever offers "freeform"
+    // as an outcome of the {format, files} shape). Treat as a malformed
+    // response rather than indexing into a catalogue entry that can't exist.
+    return {
+      ok: false,
+      needed: "model returned template_id \"freeform\" via the catalog shape instead of the {format, files} freeform shape",
+      rawResponse: result.rawResponse,
+      mocked: result.mocked,
+    };
+  }
 
   mkdirSync(input.deploymentDir, { recursive: true });
-  for (const file of rendered.files) {
+
+  let format: IaCPayload["format"];
+  let templateId: IaCPayload["template_id"];
+  let files: IaCFile[];
+  let applyCommand: string;
+  let rollbackCommand: string;
+
+  if ("format" in result.value) {
+    // Freeform: nothing in the catalogue fit, so the LLM wrote files
+    // directly (skills/novel-requirement-reasoning.md). apply_command/
+    // rollback_command are still never taken from the LLM — derived
+    // generically from format + project name, matching the exact strings
+    // commandAllowList.ts already expects.
+    files = resolveFreeformSecrets(result.value.files);
+    format = result.value.format;
+    templateId = "freeform";
+    ({ applyCommand, rollbackCommand } = genericCommandsFor(format, input.projectName));
+  } else {
+    // Guarded above: template_id === "freeform" already returned early, so
+    // this is genuinely one of the rendered catalogue ids.
+    const catalogTemplateId = result.value.template_id as Exclude<TemplateId, "freeform">;
+    const variables = resolveVariableSecrets(result.value.variables);
+    const rendered = renderTemplate(catalogTemplateId, input.plan, variables, {
+      requestId: input.requestId,
+      projectName: input.projectName,
+    });
+    files = rendered.files;
+    format = TEMPLATES[catalogTemplateId].format;
+    templateId = catalogTemplateId;
+    applyCommand = rendered.applyCommand;
+    rollbackCommand = rendered.rollbackCommand;
+  }
+
+  for (const file of files) {
     const filePath = path.join(input.deploymentDir, file.path);
     mkdirSync(path.dirname(filePath), { recursive: true });
     writeFileSync(filePath, file.content, "utf-8");
   }
 
-  const format = TEMPLATES[result.value.template_id].format;
   const validation = format === "terraform" ? await validateTerraform(input.deploymentDir) : await validateCompose(input.deploymentDir);
 
   const payload: IaCPayload = {
     request_id: input.requestId,
     format,
-    template_id: result.value.template_id,
-    files: rendered.files,
-    apply_command: rendered.applyCommand,
-    rollback_command: rendered.rollbackCommand,
+    template_id: templateId,
+    files,
+    apply_command: applyCommand,
+    rollback_command: rollbackCommand,
     diff_from: input.diffFrom,
     validation,
   };

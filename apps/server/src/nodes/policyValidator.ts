@@ -2,14 +2,16 @@ import type { CapacityPlanOption, IaCPayload, PlanRequest, PolicyFinding, Policy
 
 /**
  * Deterministic policy/security scan of a rendered IaCPayload — no LLM.
- * Runs after every iac_generator attempt (03b-policy-validator.md). Most of
- * these checks can't actually fire today: compose structure (images, ports,
- * privileged/network_mode) comes from fixed template code in
- * templates/catalog.ts driven by the CapacityPlan, which the iac_generator
- * LLM never touches — it only picks a template_id and fills a small
- * variable bag. They exist anyway as regression guards against future
- * template or model drift; weak_default_secret is the one finding the LLM
- * can actually cause and fix today.
+ * Runs after every iac_generator attempt (03b-policy-validator.md). For a
+ * catalog-rendered payload (template_id !== "freeform"), most of these
+ * checks are regression guards rather than live findings: compose structure
+ * (images, ports, privileged/network_mode) comes from fixed template code in
+ * templates/catalog.ts, which the LLM never touches there — it only picks a
+ * template_id and fills a small variable bag, so weak_default_secret is the
+ * one finding it can actually cause and fix on that path. For a freeform
+ * payload (skills/novel-requirement-reasoning.md), the LLM wrote every file
+ * directly, so every check here — including checkStructural below — can
+ * genuinely fire and matters for real, not just as a guard.
  */
 
 const WEAK_SECRETS = new Set(["password", "admin", "changeme", "root", "123456", "secret"]);
@@ -39,7 +41,13 @@ function checkStructural(payload: IaCPayload): PolicyFinding[] {
       severity: "critical",
       message: `${payload.validation.tool} rejected the rendered files: ${payload.validation.output}`,
       file: null,
-      auto_fixable: false,
+      // Freeform output is hand-written by the LLM, so a syntax error is
+      // genuinely something a retry with this exact error text can fix (see
+      // iacGenerator.ts / pipeline.ts's existing self-correction loop). A
+      // catalog-rendered payload failing validation means a backend
+      // rendering bug instead — a retry against the same template would
+      // just reproduce the identical failure.
+      auto_fixable: payload.template_id === "freeform",
     },
   ];
 }

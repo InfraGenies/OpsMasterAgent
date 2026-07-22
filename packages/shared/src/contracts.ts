@@ -123,6 +123,8 @@ export const ArchitectureRecommendationSchema = z.object({
   total_controls_cost_usd_monthly: z.number(),
   /** Alternatives considered and rejected for controls with a genuine real-world choice (e.g. Aurora Global Database vs. cross-region read replicas vs. DynamoDB Global Tables). Optional/empty for controls with no meaningful alternative. */
   alternatives_considered: z.array(ArchitectureAlternativeSchema).default([]),
+  /** Free-form, plain-English description of who this client actually is (e.g. "seed-stage fintech startup") — NOT constrained to org_scale's four buckets; coexists with the structural enum fields rather than replacing them. */
+  client_classification: z.string().default(""),
 });
 export type ArchitectureRecommendation = z.infer<typeof ArchitectureRecommendationSchema>;
 
@@ -254,6 +256,8 @@ export const TemplateIdSchema = z.enum([
   "compose-lb-replicas-v1",
   "tf-ecs-fargate-v1",
   "tf-eks-v1",
+  /** Not a catalog entry — the iac_generator wrote these files directly because nothing in the catalog covered the topology. See skills/novel-requirement-reasoning.md. */
+  "freeform",
 ]);
 export type TemplateId = z.infer<typeof TemplateIdSchema>;
 
@@ -291,11 +295,27 @@ export type IaCGeneratorError = z.infer<typeof IaCGeneratorErrorSchema>;
  * apply_command/rollback_command, and validation all happen in backend code
  * (03-iac-generator.md: "the LLM never free-writes infrastructure code").
  */
+/**
+ * Freeform variant: the LLM writes IaC file contents directly when nothing in
+ * the catalogue fits (skills/novel-requirement-reasoning.md), rather than
+ * picking a template_id + variables. apply_command/rollback_command are
+ * still never produced by the LLM in this shape either — the backend derives
+ * them generically from `format` + the project name, matching the exact
+ * literal strings commandAllowList.ts already expects (see iacGenerator.ts:
+ * genericCommandsFor).
+ */
+export const IaCGeneratorFreeformOutputSchema = z.object({
+  format: z.enum(["compose", "terraform"]),
+  files: z.array(IaCFileSchema),
+});
+export type IaCGeneratorFreeformOutput = z.infer<typeof IaCGeneratorFreeformOutputSchema>;
+
 export const IaCGeneratorLLMOutputSchema = z.union([
   z.object({
     template_id: TemplateIdSchema,
     variables: z.record(z.string(), z.unknown()),
   }),
+  IaCGeneratorFreeformOutputSchema,
   IaCGeneratorErrorSchema,
 ]);
 export type IaCGeneratorLLMOutput = z.infer<typeof IaCGeneratorLLMOutputSchema>;

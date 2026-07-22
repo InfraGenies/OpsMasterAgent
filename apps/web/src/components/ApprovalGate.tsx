@@ -52,6 +52,11 @@ export function ApprovalGate({
         >
           {iac.validation.tool}: {iac.validation.ok ? "valid" : "invalid"}
         </span>
+        {iac.template_id === "freeform" && (
+          <span className="status-badge border-amber-700/70 text-amber-300 bg-amber-950/50">
+            ✎ Custom-written by the agent — not a vetted template, review carefully
+          </span>
+        )}
       </div>
 
       {unresolvedBlocking && unresolvedBlocking.length > 0 && (

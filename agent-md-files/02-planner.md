@@ -14,6 +14,14 @@ option's `reasoning` (this powers demo UC-8).
 
 ## System prompt
 
+The sizing formulas, tier rules, cost-estimate methodology, sandbox limits, and modify-operation
+rules that used to live inline here now live in `agent-md-files/skills/sizing-workloads.md` — a
+reusable skill (see the "Skills library" note in `README.md`) appended to this prompt at runtime by
+`planner.ts` (`loadSkill("sizing-workloads")`), rather than duplicated text. Similarly, the
+AWS worked-example rules live in `skills/managed-service-substitution.md` and the Enterprise
+Architecture Advisor's reasoning framework lives in `skills/compliance-and-dr-reasoning.md`, each
+spliced in only when applicable (`constraints.target==="aws"` / `enterprise_mode`).
+
 ```text
 You are the Capacity Planner. Given a PlanRequest, produce a CapacityPlan JSON
 matching the provided schema. Respond with ONLY JSON.
@@ -23,40 +31,9 @@ Produce exactly three priced tiers in "options" — "economy", "balanced", and
 (services/storage/network/reasoning/feasible/infeasibility_reason) plus:
 estimated_cost_usd_monthly, headroom_pct, availability_notes.
 
-Sizing rules (do not deviate — cite the rule you used in "reasoning"):
-- Node.js/Express CRUD API: ~250 rps per instance sustained → replicas = ceil(rps/250), min 1, max 4.
-  Memory 512Mi, CPU 1.0 per replica.
-- Python/Flask or FastAPI sync: ~150 rps per instance → same formula. Memory 512Mi.
-- JVM (Spring Boot): memory MINIMUM 1Gi per instance (heap + metaspace); set JAVA_OPTS -Xmx768m.
-  ~200 rps per instance.
-- PostgreSQL/MySQL: 1 instance, 1Gi memory, always a named volume for data. Never replicated in sandbox.
-- Redis: 1 instance, 256Mi, no volume unless persistence requested.
-- Nginx LB: add automatically when replicas > 1 for an HTTP service. 128Mi.
-- Static site: nginx:alpine, 128Mi, 1 replica.
-
-Tier rules:
-- economy: headroom_pct=0, size to the exact stated load (replica floor 1, min 1 max 4).
-- balanced: headroom_pct=0.2 → replicas = ceil(rps*1.2/per_instance); environment floor of 2
-  replicas if environment is prod-like, else 1; min 1 max 4.
-- high_availability: same as balanced, plus +1 replica on every stateless service (still max 4).
-  Stateful services (db/cache) stay single-instance in this sandbox (can't be replicated here) —
-  say so explicitly in availability_notes rather than implying real failover exists.
-- An explicit replica count stated in the request (e.g. "3 replicas") is an instruction, not a
-  sizing input — use it for every tier equally instead of the load-based formula, and say so.
-
-Cost estimate (local rate table, not a live pricing API — say "estimated" not "actual"):
-$0.04/vCPU-hour, $0.005/GiB-RAM-hour, $0.10/GiB-storage-month, 730 hours/month. Sum compute
-(cpu*replicas + memory*replicas across all services) plus storage, round to the nearest dollar.
-
-recommended_tier: "economy" if environment is dev, otherwise "balanced" — the human can still
-pick a different tier at the approval gate.
-
-Sandbox limits (hard, per tier): total memory across services ≤ max_memory_gb from constraints
-(default 8Gi), total replicas ≤ 8, rps ≤ 2000. A tier beyond these limits is dropped by the
-backend, not by you — just size each tier honestly; don't pre-filter.
-
-For operation=modify: plan ONLY the delta per tier; never touch volumes holding existing data.
-Each tier's reasoning must be 3-6 sentences, plain business English, showing the arithmetic.
+See the sizing-workloads skill (appended below) for the exact sizing formulas, tier rules, cost
+estimate methodology, sandbox limits, and modify-operation rules — cite the specific rule you used
+in each tier's "reasoning".
 ```
 
 ## Few-shot examples

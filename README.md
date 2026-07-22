@@ -157,15 +157,30 @@ auto-reject timeout, since a plan-only run has nothing dangling to force a decis
 scoping/estimation requests (a small-team app idea, a large-org sizing conversation) where generating
 deployable IaC would be premature — see `04-approval-gate.md`'s "Plan-only review gate" section.
 
+A fourth addition: a **skills library** (`agent-md-files/skills/*.md`, runtime copies under
+`apps/server/src/skills/`, loaded via `llm/skillLoader.ts`) — reusable knowledge modules (sizing formulas,
+AWS managed-service substitution, compliance/DR reasoning, IaC-writing conventions) spliced into node
+prompts at runtime instead of duplicated inline text, so a capability can be edited in one place regardless
+of how many nodes use it. This also underpins **freeform IaC generation**: `iac_generator` now tries the
+template catalogue first, and when nothing covers a request's topology, writes the IaC files directly
+(`template_id: "freeform"`) rather than only ever refusing — informed by the `writing-compose-iac`/
+`writing-terraform-iac`/`novel-requirement-reasoning` skills, validated by the same `docker compose config
+-q`/`terraform validate` checks the catalogue path already used, self-corrected through the existing
+`policy_validator` retry loop (`checkStructural`'s `auto_fixable` now flips to `true` specifically for
+freeform payloads), and flagged distinctly at the approval gate so a human reviews it more carefully, not
+less. `apply_command`/`rollback_command` are still never produced by the LLM in this path either — derived
+generically from `format` + project name, matching the exact literal strings `commandAllowList.ts` already
+expects, so no allow-list change was needed.
+
 ## Where each spec agent lives in code
 
 | Spec file | Code |
 |---|---|
 | `00-orchestrator.md` | `apps/server/src/orchestrator/pipeline.ts`, `ws/hub.ts` |
 | `01-intake.md` | `apps/server/src/nodes/intake.ts`, prompt at `apps/server/src/prompts/01-intake.md` |
-| `02-planner.md` | `apps/server/src/nodes/planner.ts` + `planMerge.ts`, prompt at `prompts/02-planner.md` |
+| `02-planner.md` | `apps/server/src/nodes/planner.ts` + `planMerge.ts`, prompt at `prompts/02-planner.md`, skills at `skills/{sizing-workloads,managed-service-substitution,compliance-and-dr-reasoning}.md` |
 | `02b-readiness-check.md` | `apps/server/src/nodes/readinessCheck.ts` (deterministic, no prompt file — no LLM call), wired into `orchestrator/pipeline.ts: reachApprovalGate`, UI: `web/src/components/ReadinessReportView.tsx` |
-| `03-iac-generator.md` | `apps/server/src/nodes/iacGenerator.ts`, templates in `templates/catalog.ts`, prompt at `prompts/03-iac-generator.md` |
+| `03-iac-generator.md` | `apps/server/src/nodes/iacGenerator.ts`, templates in `templates/catalog.ts`, prompt at `prompts/03-iac-generator.md`, skills at `skills/{writing-compose-iac,writing-terraform-iac,novel-requirement-reasoning}.md` |
 | `03b-policy-validator.md` | `apps/server/src/nodes/policyValidator.ts` (deterministic, no prompt file — no LLM call), self-correction loop lives in `orchestrator/pipeline.ts: reachApprovalGate`, UI: `web/src/components/PolicyReportView.tsx` |
 | `04-approval-gate.md` | `orchestrator/pipeline.ts` (`reachApprovalGate`, `submitDecision`, timeout), UI: `web/src/components/ApprovalGate.tsx` |
 | `05-deploy-agent.md` | `apps/server/src/nodes/deploy.ts`, `commandAllowList.ts` |

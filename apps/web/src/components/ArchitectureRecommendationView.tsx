@@ -37,6 +37,10 @@ export function ArchitectureRecommendationView({ rec }: { rec: ArchitectureRecom
           ))}
       </div>
 
+      {rec.client_classification && (
+        <p className="text-xs text-slate-400 italic">{rec.client_classification}</p>
+      )}
+
       <p className="text-sm text-slate-300 leading-relaxed">{rec.archetype_reasoning}</p>
       <p className="text-sm text-slate-300 leading-relaxed">{rec.criticality_reasoning}</p>
 

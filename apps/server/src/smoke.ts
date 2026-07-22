@@ -217,6 +217,21 @@ async function main() {
     console.log(`compliance frameworks: ${compliance?.frameworks.join(", ")} (expected: hipaa)`);
   }
 
+  console.log("\n=== Freeform IaC generation: topology no catalog template covers (Postgres + MongoDB together) ===");
+  const freeform = await startRun(
+    "Create a staging environment for a Node.js application that needs both PostgreSQL and MongoDB at the same time, handling 50 requests/second.",
+    null
+  );
+  const freeformGate = await waitForStatus(freeform, ["awaiting_approval", "refused", "failed"]);
+  console.log(`reached: ${freeformGate} (expected: awaiting_approval)`);
+  if (freeformGate === "awaiting_approval") {
+    const iac = await loadLatestNodeOutput<IaCPayload>(getStore(), freeform, "iac_generator");
+    console.log(
+      `template_id: ${iac?.template_id} (expected: "freeform" under real LLM mode — mock mode always uses a catalog template instead, since mockIacGenerator deliberately never writes freeform output)`
+    );
+    console.log(`validation: ok=${iac?.validation.ok} — ${iac?.validation.output.slice(0, 200)}`);
+  }
+
   console.log("\nsmoke test complete.");
   process.exit(0);
 }
