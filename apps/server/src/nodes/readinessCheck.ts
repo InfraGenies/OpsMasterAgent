@@ -217,10 +217,12 @@ export interface ReadinessCheckInput {
   existingPlan: CapacityPlanOption | null;
   existingEnvRecord: EnvironmentRecord | null;
   demoPortConflict: boolean;
+  /** Enterprise Architecture Advisor mode (CapacityPlan.architecture_recommendation present) — also a Terraform/AWS path, but its single illustrative compute service carries no managed_service substitution for isAwsPlan's heuristic to key off. */
+  isEnterpriseMode?: boolean;
 }
 
 export async function runReadinessCheck(input: ReadinessCheckInput): Promise<ReadinessReport> {
-  const aws = isAwsPlan(input.plan);
+  const aws = isAwsPlan(input.plan) || (input.isEnterpriseMode ?? false);
   const checks: ReadinessCheckResult[] = [
     aws ? await checkTerraformCli() : await checkDockerDaemon(),
     await checkHostPortsFree(input.plan, input.existingPlan, input.demoPortConflict),

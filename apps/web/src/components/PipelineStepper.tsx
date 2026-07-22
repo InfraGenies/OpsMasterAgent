@@ -5,6 +5,7 @@ const STEPS: { key: NodeName; label: string }[] = [
   { key: "intake", label: "Intake" },
   { key: "planner", label: "Planner" },
   { key: "readiness_check", label: "Readiness" },
+  { key: "compliance_check", label: "Compliance" },
   { key: "iac_generator", label: "IaC Generator" },
   { key: "policy_validator", label: "Policy & Security" },
   { key: "approval_gate", label: "Approval Gate" },
@@ -40,7 +41,14 @@ const ICONS: Record<Status, string> = {
 export function PipelineStepper({ events }: { events: AuditEvent[] }) {
   const hasRollback = events.some((e) => e.node === "rollback");
   const hasRefuse = events.some((e) => e.node === "refuse");
-  const steps = STEPS.filter((s) => (s.key === "rollback" ? hasRollback : s.key === "refuse" ? hasRefuse : true));
+  // Enterprise Architecture Advisor mode only — no compliance_check audit
+  // event exists for any other use case, so this step is filtered out the
+  // same way the branch-only rollback/refuse steps are, rather than always
+  // showing a permanently-idle step for every non-enterprise run.
+  const hasCompliance = events.some((e) => e.node === "compliance_check");
+  const steps = STEPS.filter((s) =>
+    s.key === "rollback" ? hasRollback : s.key === "refuse" ? hasRefuse : s.key === "compliance_check" ? hasCompliance : true
+  );
 
   return (
     <div className="flex flex-wrap items-center gap-y-2">

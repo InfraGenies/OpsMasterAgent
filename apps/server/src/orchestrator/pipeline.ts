@@ -10,6 +10,7 @@ import type {
   Tier,
 } from "@ops-master/shared";
 import { env } from "../config.js";
+import { runComplianceCheck } from "../nodes/complianceCheck.js";
 import { decodeSnapshot, encodeSnapshot } from "../nodes/envSnapshot.js";
 import { runDeploy } from "../nodes/deploy.js";
 import { runIacGenerator } from "../nodes/iacGenerator.js";
@@ -215,6 +216,7 @@ async function reachApprovalGate(
     existingPlan: existing?.capacityPlan ?? null,
     existingEnvRecord,
     demoPortConflict,
+    isEnterpriseMode: fullPlan.architecture_recommendation != null,
   });
   await logAudit(store, {
     request_id: requestId,
@@ -231,6 +233,29 @@ async function reachApprovalGate(
   if (!readiness.ready) {
     await refuseRun(requestId, `infrastructure not ready: ${readiness.blockers.join("; ")}`);
     return;
+  }
+
+  // compliance_check (02c-compliance-check.md): Enterprise Architecture
+  // Advisor only — every finding is rooted in fullPlan.architecture_recommendation
+  // (a planner-time decision), so unlike policy_validator this runs once,
+  // pre-flight, with no retry loop: iac_generator has no lever over which
+  // managed controls were chosen, so a retry would just reproduce the same
+  // report. Never refuses the run — gaps ride to the gate as a visible
+  // warning, same as unresolved PolicyFindings already do.
+  if (fullPlan.architecture_recommendation) {
+    broadcastEvent("node_started", requestId, "compliance_check");
+    const compliance = runComplianceCheck(fullPlan.architecture_recommendation, requestId);
+    await logAudit(store, {
+      request_id: requestId,
+      node: "compliance_check",
+      actor: "agent",
+      status: compliance.passed ? "success" : "failure",
+      detail: compliance.passed
+        ? `${compliance.findings.length} control(s) checked across ${compliance.frameworks.join(", ") || "no framework"}, no unresolved gaps`
+        : `${compliance.gap_count} gap(s) found across ${compliance.frameworks.join(", ")}`,
+      output: compliance,
+    });
+    broadcastEvent("node_finished", requestId, "compliance_check", compliance);
   }
 
   // Demo hook (mirrors nodes/verify.ts's forceFail): lets the self-correction
@@ -253,6 +278,7 @@ async function reachApprovalGate(
       deploymentDir: deploymentDirFor(requestId),
       feedback,
       demoWeakSecret,
+      enterpriseArchetype: fullPlan.architecture_recommendation?.archetype ?? null,
     });
 
     if (!iacResult.ok) {

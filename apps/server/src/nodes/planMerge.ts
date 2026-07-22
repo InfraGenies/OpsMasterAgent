@@ -49,6 +49,11 @@ export function mergeCapacityPlan(existing: CapacityPlan, delta: CapacityPlan): 
     recommended_tier: delta.recommended_tier,
     feasible: delta.feasible,
     infeasibility_reason: delta.infeasibility_reason,
+    // Object literal, not a spread, so a reject/edit rework on an
+    // enterprise-mode run doesn't silently drop this — the rework's own
+    // planner call recomputes it fresh, but fall back to the existing plan's
+    // in case a delta ever arrives without one.
+    architecture_recommendation: delta.architecture_recommendation ?? existing.architecture_recommendation,
   };
 }
 

@@ -1,6 +1,7 @@
 import type {
   AuditEvent,
   CapacityPlan,
+  ComplianceReport,
   Decision,
   DecisionAction,
   IaCPayload,
@@ -38,6 +39,7 @@ export interface RunDetail {
   plan_request: PlanRequest | null;
   capacity_plan: CapacityPlan | null;
   readiness_report: ReadinessReport | null;
+  compliance_report: ComplianceReport | null;
   iac_payload: IaCPayload | null;
   policy_report: PolicyReport | null;
   verify_report: VerifyReport | null;

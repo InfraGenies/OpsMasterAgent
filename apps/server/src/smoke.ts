@@ -10,7 +10,7 @@ import { activeProviderName, isMockMode } from "./llm/client.js";
 import { loadLatestNodeOutput } from "./orchestrator/audit.js";
 import { startRun, submitDecision } from "./orchestrator/pipeline.js";
 import { getStore } from "./store/index.js";
-import type { CapacityPlan, IaCPayload, PolicyReport } from "@ops-master/shared";
+import type { CapacityPlan, ComplianceReport, IaCPayload, PolicyReport } from "@ops-master/shared";
 
 async function waitForStatus(requestId: string, statuses: string[], timeoutMs = 30000): Promise<string> {
   const start = Date.now();
@@ -146,6 +146,75 @@ async function main() {
 
     const deployEvent = uc9Events.find((e) => e.node === "deploy");
     console.log(`deploy detail: ${deployEvent?.detail}`);
+  }
+
+  console.log("\n=== Enterprise Architecture Advisor: UC-10 payment platform (PCI-DSS, very_high) ===");
+  const uc10 = await startRun(
+    "We are launching a payment platform. Expected 8 million users. PCI-DSS compliant. Multi-region DR. RPO < 5 min. RTO < 15 min.",
+    null
+  );
+  const uc10Gate = await waitForStatus(uc10, ["awaiting_approval", "refused", "failed"]);
+  console.log(`reached: ${uc10Gate} (expected: awaiting_approval)`);
+  if (uc10Gate === "awaiting_approval") {
+    const store = getStore();
+    const planRequest = await loadLatestNodeOutput<{ enterprise_mode: boolean }>(store, uc10, "intake");
+    const plan = await loadLatestNodeOutput<CapacityPlan>(store, uc10, "planner");
+    const rec = plan?.architecture_recommendation;
+    console.log(`enterprise_mode: ${planRequest?.enterprise_mode} (expected: true)`);
+    console.log(
+      `criticality: ${rec?.criticality_score}/14 -> ${rec?.criticality_band} (expected: 14/14 -> very_high); org_scale: ${rec?.enterprise_context.org_scale} (expected: solo — team size unstated)`
+    );
+    const controlNames = rec?.managed_controls.map((c) => c.name) ?? [];
+    console.log(
+      `has Shield Advanced/Aurora Global/Route53 failover: ${["AWS Shield Advanced", "Aurora Global Database", "Amazon Route 53 (health-check failover)"].every((n) => controlNames.includes(n))} (expected: true)`
+    );
+    const compliance = await loadLatestNodeOutput<ComplianceReport>(store, uc10, "compliance_check");
+    console.log(`compliance frameworks: ${compliance?.frameworks.join(", ")} (expected: pci_dss), passed: ${compliance?.passed} (expected: true)`);
+  }
+
+  console.log("\n=== Enterprise Architecture Advisor: UC-11a 2-developer MVP (solo, low) ===");
+  const uc11a = await startRun("We are 2 developers building an MVP.", null);
+  const uc11aGate = await waitForStatus(uc11a, ["awaiting_approval", "refused", "failed"]);
+  console.log(`reached: ${uc11aGate} (expected: awaiting_approval)`);
+  if (uc11aGate === "awaiting_approval") {
+    const plan = await loadLatestNodeOutput<CapacityPlan>(getStore(), uc11a, "planner");
+    const rec = plan?.architecture_recommendation;
+    console.log(
+      `org_scale: ${rec?.enterprise_context.org_scale} (expected: solo), archetype: ${rec?.archetype} (expected: solo_ecs_fargate), criticality_band: ${rec?.criticality_band} (expected: low)`
+    );
+  }
+
+  console.log("\n=== Enterprise Architecture Advisor: UC-11b rescale to 500 developers (new create, not modify) ===");
+  const uc11b = await startRun("We now have 500 developers across 20 teams.", null);
+  const uc11bGate = await waitForStatus(uc11b, ["awaiting_approval", "refused", "failed"]);
+  console.log(`reached: ${uc11bGate} (expected: awaiting_approval)`);
+  if (uc11bGate === "awaiting_approval") {
+    const store = getStore();
+    const plan = await loadLatestNodeOutput<CapacityPlan>(store, uc11b, "planner");
+    const rec = plan?.architecture_recommendation;
+    console.log(
+      `org_scale: ${rec?.enterprise_context.org_scale} (expected: enterprise), archetype: ${rec?.archetype} (expected: enterprise_eks_landing_zone), criticality_band: ${rec?.criticality_band} (expected: low — unchanged from UC-11a, proving axis independence)`
+    );
+    const uc11aRun = await store.getRun(uc11a);
+    const uc11bRun = await store.getRun(uc11b);
+    console.log(
+      `distinct request_ids: ${uc11a !== uc11b} (expected: true), both operation=create: ${uc11aRun?.operation === "create" && uc11bRun?.operation === "create"} (expected: true — rescale is a new request, not a modify)`
+    );
+  }
+
+  console.log("\n=== Enterprise Architecture Advisor: UC-12 generalization scenario (HIPAA healthcare startup, not a canned example) ===");
+  const uc12 = await startRun("HIPAA healthcare startup, 5 developers, single-region.", null);
+  const uc12Gate = await waitForStatus(uc12, ["awaiting_approval", "refused", "failed"]);
+  console.log(`reached: ${uc12Gate} (expected: awaiting_approval)`);
+  if (uc12Gate === "awaiting_approval") {
+    const store = getStore();
+    const plan = await loadLatestNodeOutput<CapacityPlan>(store, uc12, "planner");
+    const rec = plan?.architecture_recommendation;
+    console.log(
+      `org_scale: ${rec?.enterprise_context.org_scale} (expected: team), criticality: ${rec?.criticality_score}/14 -> ${rec?.criticality_band} (expected: 6/14 -> medium)`
+    );
+    const compliance = await loadLatestNodeOutput<ComplianceReport>(store, uc12, "compliance_check");
+    console.log(`compliance frameworks: ${compliance?.frameworks.join(", ")} (expected: hipaa)`);
   }
 
   console.log("\nsmoke test complete.");

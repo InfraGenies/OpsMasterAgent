@@ -52,6 +52,41 @@ export function estimateEcsFargateMonthlyCost(services: AwsFargateService[], nat
   ]);
 }
 
+/**
+ * Illustrative flat monthly rates for the Enterprise Architecture Advisor's
+ * managed controls (nodes/enterpriseRulesEngine.ts) — same "local rate table,
+ * not a live pricing API" scoping as the rest of this file. Organizations,
+ * Control Tower, and IAM Identity Center are real AWS control-plane services
+ * with no incremental charge, so they're deliberately $0, not omitted.
+ */
+const MANAGED_CONTROL_USD_MONTHLY: Record<string, number> = {
+  "AWS WAF": 15,
+  "AWS Shield Advanced": 3000,
+  "Amazon GuardDuty": 50,
+  "AWS Security Hub": 30,
+  "AWS Config": 40,
+  "AWS CloudTrail": 20,
+  "AWS Secrets Manager": 5,
+  "AWS KMS": 3,
+  "Amazon Route 53 (health-check failover)": 1.5,
+  "Aurora Global Database (cross-region replica)": 600,
+  "Amazon OpenSearch Service": 65,
+  "Amazon SQS": 10,
+  "Amazon EventBridge": 5,
+  "AWS Backup": 20,
+  "AWS Transit Gateway": 40,
+  "AWS Organizations": 0,
+  "AWS Control Tower": 0,
+  "AWS IAM Identity Center": 0,
+};
+
+/** Looks up each control's illustrative flat monthly rate; unrecognized names cost $0 rather than throwing, so a new control can be added to the rules engine before its rate is tabulated here. */
+export function estimateManagedControlsMonthlyCost(controlNames: string[]): CostEstimate {
+  return roundedBreakdown(
+    controlNames.map((name) => ({ label: name, usd: MANAGED_CONTROL_USD_MONTHLY[name] ?? 0 }))
+  );
+}
+
 export function estimateEksMonthlyCost(nodeCount: number, natGateways: number): CostEstimate {
   const controlPlaneUsd = EKS_CONTROL_PLANE_USD_PER_HOUR * HOURS_PER_MONTH;
   const nodesUsd = nodeCount * EKS_NODE_T3_MEDIUM_USD_PER_HOUR * HOURS_PER_MONTH;

@@ -1,6 +1,7 @@
 import { PlanRequestSchema, type PlanRequest } from "@ops-master/shared";
 import { loadPrompt } from "../llm/promptLoader.js";
 import { runLLMJson } from "../llm/runLLMJson.js";
+import { detectEnterpriseMode, mockExtractEnterpriseContext } from "./enterpriseRulesEngine.js";
 
 const SYSTEM_PROMPT = loadPrompt("01-intake.md");
 
@@ -18,7 +19,19 @@ const SCHEMA_SHAPE = `{
   "existing_env_id": "string | null",
   "notes": ["string"],
   "feasible_input": boolean,
-  "infeasibility_reason": "string | null"
+  "infeasibility_reason": "string | null",
+  "enterprise_mode": "boolean — true iff the request describes business context (compliance target, team/org size, RPO/RTO, multi-region DR, an industry like payments/healthcare) rather than just an app to size",
+  "enterprise_context": {
+    "industry_domain": "payments | healthcare | retail | generic",
+    "compliance_targets": ["pci_dss" | "hipaa" | "soc2" | "none"],
+    "expected_users": "number | null",
+    "team_size": "number | null, e.g. from \"N developers/engineers\"",
+    "org_scale": "solo (<=3 people) | team (4-49) | scale_up (50-249) | enterprise (250+) — solo if team_size not stated",
+    "multi_region": "boolean",
+    "rpo_minutes": "number | null",
+    "rto_minutes": "number | null",
+    "signal_reasoning": "string — which phrases in raw_text mapped to which field above"
+  } // or null when enterprise_mode is false
 }`;
 
 function buildUserPrompt(requestId: string, rawText: string, existingEnvId: string | null): string {
@@ -73,7 +86,14 @@ function mockIntake(requestId: string, rawText: string): PlanRequest {
   // UC-9: "aws" without "production" is allowed — this path only ever
   // produces a Terraform plan, never a live apply (see commandAllowList.ts).
   const wantsAws = !wantsRealProdCloud && /\baws\b/i.test(rawText);
-  if (wantsAws) runtime = "multi";
+
+  // Enterprise Architecture Advisor: a separate signal from wantsAws/UC-9's
+  // fixed retail-store-sample-app worked example — planner.ts branches on
+  // enterprise_mode before constraints.target==="aws" so the two never
+  // collide. Checked against every existing UC-1..UC-9 request text to
+  // confirm none false-trigger (see enterpriseRulesEngine.ts's detector).
+  const enterpriseMode = !wantsRealProdCloud && detectEnterpriseMode(rawText);
+  if (wantsAws || enterpriseMode) runtime = "multi";
 
   return {
     request_id: requestId,
@@ -85,7 +105,7 @@ function mockIntake(requestId: string, rawText: string): PlanRequest {
     expected_load: { rps, concurrent_users: concurrentUsers },
     environment: lower.includes("staging") ? "staging" : lower.includes("qa") ? "qa" : "dev",
     operation,
-    constraints: { target: wantsAws ? "aws" : "compose", max_memory_gb: 8 },
+    constraints: { target: wantsAws || enterpriseMode ? "aws" : "compose", max_memory_gb: 8 },
     existing_env_id: null,
     notes:
       rps === null
@@ -99,6 +119,8 @@ function mockIntake(requestId: string, rawText: string): PlanRequest {
       : wantsRealProdCloud
         ? "sandbox-only platform"
         : null,
+    enterprise_mode: enterpriseMode,
+    enterprise_context: enterpriseMode ? mockExtractEnterpriseContext(rawText) : null,
   };
 }
 

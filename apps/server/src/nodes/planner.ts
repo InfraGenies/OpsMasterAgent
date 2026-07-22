@@ -12,6 +12,7 @@ import { runLLMJson } from "../llm/runLLMJson.js";
 import { estimateEcsFargateMonthlyCost, estimateEksMonthlyCost } from "../pricing/awsRateTable.js";
 import { estimateMonthlyCost } from "../pricing/rateTable.js";
 import { checkSandboxLimits, mergeCapacityPlan } from "./planMerge.js";
+import { buildArchitectureRecommendation, buildEnterpriseOptions } from "./enterpriseRulesEngine.js";
 
 const SYSTEM_PROMPT = loadPrompt("02-planner.md");
 
@@ -31,7 +32,8 @@ const SCHEMA_SHAPE = `{
   }],
   "recommended_tier": "economy" | "balanced" | "high_availability",
   "feasible": boolean,
-  "infeasibility_reason": "string | null"
+  "infeasibility_reason": "string | null",
+  "architecture_recommendation": "OMIT this field entirely unless enterprise_mode=true (see ENTERPRISE MODE note below)"
 }`;
 
 const AWS_TARGET_NOTE =
@@ -41,6 +43,25 @@ const AWS_TARGET_NOTE =
   "\"high_availability\" (EKS, Multi-AZ RDS/ElastiCache, multi_az=true, +1 replica per stateless service). " +
   "No \"balanced\" tier for AWS. See agent-md-files/USE_CASES.md UC-9 for the exact worked example " +
   "(retail-store-sample-app: ui/catalog/cart/orders/checkout) if the request matches it.";
+
+const ENTERPRISE_MODE_NOTE =
+  "\n\nenterprise_mode=true: this is a business-description request (compliance/scale/DR-driven), not a " +
+  "single-app sizing request. Produce exactly ONE \"balanced\"-tier option, and populate " +
+  "architecture_recommendation using this deterministic reasoning framework (mirror it exactly — a real " +
+  "reviewer will check the arithmetic): " +
+  "(1) org_scale from enterprise_context.team_size — solo <=3, team 4-49, scale_up 50-249, enterprise 250+, " +
+  "defaulting to solo if unstated — maps to a PlatformArchetype (solo_ecs_fargate / team_ecs_fargate_ha / " +
+  "scale_up_eks / enterprise_eks_landing_zone); " +
+  "(2) criticality_score = sum of: compliance target present (+3), payments/healthcare domain (+3), " +
+  "expected_users>=1,000,000 (+2), rpo_minutes<=15 (+2), rto_minutes<=30 (+2), multi_region (+2), banded " +
+  "low 0-2 / medium 3-6 / high 7-10 / very_high 11-14 — each band cumulatively adds managed controls " +
+  "(medium: AWS Backup/GuardDuty/WAF; high: +Security Hub/Config/CloudTrail/KMS/Secrets Manager; " +
+  "very_high: +Shield Advanced/Aurora Global Database/Route53 failover); " +
+  "(3) each compliance_target (pci_dss/hipaa) mandates its own fixed control set independent of the other " +
+  "two axes (a compliance target can require a control the criticality band alone wouldn't yet). " +
+  "org_scale and criticality are independent — a small team can score very_high criticality, and a large " +
+  "org can score low criticality. Union all controls, dedupe by name, explain WHY each fired in its " +
+  "reasoning field. This must generalize to any input combination, not just canned examples.";
 
 function buildUserPrompt(
   planRequest: PlanRequest,
@@ -54,9 +75,10 @@ function buildUserPrompt(
   const feedbackNote = humanFeedback
     ? `\n\nA human reviewer rejected the previous plan with this feedback — address it directly:\n"${humanFeedback}"`
     : "";
-  const awsNote = planRequest.constraints.target === "aws" ? AWS_TARGET_NOTE : "";
+  const enterpriseNote = planRequest.enterprise_mode ? ENTERPRISE_MODE_NOTE : "";
+  const awsNote = !planRequest.enterprise_mode && planRequest.constraints.target === "aws" ? AWS_TARGET_NOTE : "";
   return [
-    `PlanRequest:\n${JSON.stringify(planRequest, null, 2)}${modifyNote}${feedbackNote}${awsNote}`,
+    `PlanRequest:\n${JSON.stringify(planRequest, null, 2)}${modifyNote}${feedbackNote}${awsNote}${enterpriseNote}`,
     `Respond with ONLY a JSON object matching exactly this shape:\n${SCHEMA_SHAPE}`,
   ].join("\n\n");
 }
@@ -173,6 +195,20 @@ function buildAwsOptions(planRequest: PlanRequest, humanFeedback?: string): Capa
 }
 
 function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): CapacityPlan {
+  // Enterprise Architecture Advisor: checked before constraints.target==="aws"
+  // so it never collides with UC-9's fixed retail-store-sample-app worked
+  // example on that same target value — enterprise_mode is a separate signal
+  // set by intake.ts.
+  if (planRequest.enterprise_mode && planRequest.enterprise_context) {
+    return {
+      request_id: planRequest.request_id,
+      options: buildEnterpriseOptions(planRequest, humanFeedback),
+      recommended_tier: "balanced",
+      feasible: true,
+      infeasibility_reason: null,
+      architecture_recommendation: buildArchitectureRecommendation(planRequest.enterprise_context),
+    };
+  }
   if (planRequest.constraints.target === "aws") {
     return {
       request_id: planRequest.request_id,

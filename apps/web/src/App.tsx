@@ -3,9 +3,11 @@ import type { AuditEvent, Run, WsEvent } from "@ops-master/shared";
 import * as api from "./api";
 import type { RunDetail } from "./api";
 import { ApprovalGate } from "./components/ApprovalGate";
+import { ArchitectureRecommendationView } from "./components/ArchitectureRecommendationView";
 import { AuditTimeline } from "./components/AuditTimeline";
 import { CapacityPlanView } from "./components/CapacityPlanView";
 import { ChatInput } from "./components/ChatInput";
+import { ComplianceReportView } from "./components/ComplianceReportView";
 import { IacFileViewer } from "./components/IacFileViewer";
 import { PipelineStepper } from "./components/PipelineStepper";
 import { PolicyReportView } from "./components/PolicyReportView";
@@ -154,10 +156,24 @@ export function App() {
               </section>
             )}
 
+            {detail.capacity_plan?.architecture_recommendation && (
+              <section className="card p-4">
+                <h3 className="card-title mb-2.5">Architecture Recommendation</h3>
+                <ArchitectureRecommendationView rec={detail.capacity_plan.architecture_recommendation} />
+              </section>
+            )}
+
             {detail.readiness_report && (
               <section className="card p-4">
                 <h3 className="card-title mb-2.5">Readiness</h3>
                 <ReadinessReportView report={detail.readiness_report} />
+              </section>
+            )}
+
+            {detail.compliance_report && (
+              <section className="card p-4">
+                <h3 className="card-title mb-2.5">Compliance &amp; Governance</h3>
+                <ComplianceReportView report={detail.compliance_report} />
               </section>
             )}
 

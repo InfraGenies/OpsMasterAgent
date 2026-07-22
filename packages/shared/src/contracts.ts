@@ -31,6 +31,91 @@ export const TargetSchema = z.enum(["compose", "localstack", "minikube", "aws"])
 export type Target = z.infer<typeof TargetSchema>;
 
 // ---------------------------------------------------------------------------
+// 0. Enterprise Architecture Advisor (business context -> architecture
+// recommendation -> compliance gaps). Additive/parallel to the rest of the
+// pipeline: every field here is absent/null for every existing use case
+// (UC-1..UC-9) and only populated when intake detects enterprise-mode
+// signals. See agent-md-files/02c-compliance-check.md and
+// nodes/enterpriseRulesEngine.ts.
+// ---------------------------------------------------------------------------
+export const OrgScaleSchema = z.enum(["solo", "team", "scale_up", "enterprise"]);
+export type OrgScale = z.infer<typeof OrgScaleSchema>;
+
+export const PlatformArchetypeSchema = z.enum([
+  "solo_ecs_fargate",
+  "team_ecs_fargate_ha",
+  "scale_up_eks",
+  "enterprise_eks_landing_zone",
+]);
+export type PlatformArchetype = z.infer<typeof PlatformArchetypeSchema>;
+
+export const ComplianceTargetSchema = z.enum(["pci_dss", "hipaa", "soc2", "none"]);
+export type ComplianceTarget = z.infer<typeof ComplianceTargetSchema>;
+
+export const CriticalityBandSchema = z.enum(["low", "medium", "high", "very_high"]);
+export type CriticalityBand = z.infer<typeof CriticalityBandSchema>;
+
+export const EnterpriseContextSchema = z.object({
+  industry_domain: z.enum(["payments", "healthcare", "retail", "generic"]).default("generic"),
+  compliance_targets: z.array(ComplianceTargetSchema).default([]),
+  expected_users: z.number().nullable(),
+  team_size: z.number().nullable(),
+  org_scale: OrgScaleSchema,
+  multi_region: z.boolean().default(false),
+  rpo_minutes: z.number().nullable(),
+  rto_minutes: z.number().nullable(),
+  /** Which phrases in raw_text mapped to which fields above — shown in the UI so the extraction is auditable, not a black box. */
+  signal_reasoning: z.string(),
+});
+export type EnterpriseContext = z.infer<typeof EnterpriseContextSchema>;
+
+export const ManagedControlCategorySchema = z.enum([
+  "network",
+  "identity",
+  "detection",
+  "data_protection",
+  "dr_ha",
+  "compliance",
+  "cost_governance",
+]);
+export type ManagedControlCategory = z.infer<typeof ManagedControlCategorySchema>;
+
+/** Which axis of the rules engine (nodes/enterpriseRulesEngine.ts) added this control. */
+export const ManagedControlTriggerSchema = z.enum(["archetype", "criticality", "compliance_overlay"]);
+export type ManagedControlTrigger = z.infer<typeof ManagedControlTriggerSchema>;
+
+export const ManagedControlSchema = z.object({
+  name: z.string(),
+  category: ManagedControlCategorySchema,
+  triggered_by: ManagedControlTriggerSchema,
+  reasoning: z.string(),
+  compliance_tags: z.array(z.string()).default([]),
+  estimated_cost_usd_monthly: z.number(),
+  /**
+   * Phase-2 bundle template id this control renders as, once
+   * templates/enterpriseCatalog.ts exists. Deliberately a plain string, not
+   * constrained to TemplateIdSchema (§3) below — these ids can be produced by
+   * the rules engine (Phase 1) before the templates they name exist as real,
+   * renderable catalog entries (Phase 2).
+   */
+  terraform_bundle_template_id: z.string().nullable(),
+});
+export type ManagedControl = z.infer<typeof ManagedControlSchema>;
+
+export const ArchitectureRecommendationSchema = z.object({
+  enterprise_context: EnterpriseContextSchema,
+  archetype: PlatformArchetypeSchema,
+  archetype_reasoning: z.string(),
+  criticality_score: z.number(),
+  criticality_band: CriticalityBandSchema,
+  criticality_reasoning: z.string(),
+  managed_controls: z.array(ManagedControlSchema),
+  compliance_overlay: z.array(ComplianceTargetSchema),
+  total_controls_cost_usd_monthly: z.number(),
+});
+export type ArchitectureRecommendation = z.infer<typeof ArchitectureRecommendationSchema>;
+
+// ---------------------------------------------------------------------------
 // 1. PlanRequest (intake -> planner)
 // ---------------------------------------------------------------------------
 export const PlanRequestSchema = z.object({
@@ -54,6 +139,9 @@ export const PlanRequestSchema = z.object({
   notes: z.array(z.string()).optional(),
   feasible_input: z.boolean(),
   infeasibility_reason: z.string().nullable().optional(),
+  /** Enterprise Architecture Advisor dispatch flag — set by intake when it detects business-context signals (compliance target, team size, RPO/RTO, etc.). Kept separate from constraints.target==="aws" (which means UC-9's fixed retail-store-sample-app worked example) so the two AWS paths don't collide. */
+  enterprise_mode: z.boolean().default(false),
+  enterprise_context: EnterpriseContextSchema.nullable().default(null),
 });
 export type PlanRequest = z.infer<typeof PlanRequestSchema>;
 
@@ -138,6 +226,8 @@ export const CapacityPlanSchema = z.object({
   recommended_tier: TierSchema,
   feasible: z.boolean(),
   infeasibility_reason: z.string().nullable(),
+  /** Enterprise Architecture Advisor output — null for every use case except enterprise_mode requests. Lives here (once per plan) rather than on CapacityPlanOption (once per tier) because org-scale/criticality/compliance are properties of the request, identical across every priced tier. */
+  architecture_recommendation: ArchitectureRecommendationSchema.nullable().optional(),
 });
 export type CapacityPlan = z.infer<typeof CapacityPlanSchema>;
 
@@ -238,6 +328,35 @@ export const PolicyReportSchema = z.object({
 export type PolicyReport = z.infer<typeof PolicyReportSchema>;
 
 // ---------------------------------------------------------------------------
+// 3c. ComplianceReport (compliance_check -> approval gate). Enterprise-mode
+// only — absent for every other use case. Mirrors PolicyReport/PolicyFinding's
+// shape; unlike policy_validator, every finding here is non-auto-fixable (a
+// gap is rooted in which managed controls the planner chose, which
+// iac_generator has no lever over), so there is no retry loop.
+// ---------------------------------------------------------------------------
+export const ComplianceFindingStatusSchema = z.enum(["satisfied", "gap", "not_applicable"]);
+export type ComplianceFindingStatus = z.infer<typeof ComplianceFindingStatusSchema>;
+
+export const ComplianceControlFindingSchema = z.object({
+  control_id: z.string(),
+  framework: ComplianceTargetSchema,
+  status: ComplianceFindingStatusSchema,
+  severity: z.enum(["critical", "high", "medium", "low"]),
+  message: z.string(),
+  satisfied_by: z.string().nullable(),
+});
+export type ComplianceControlFinding = z.infer<typeof ComplianceControlFindingSchema>;
+
+export const ComplianceReportSchema = z.object({
+  request_id: z.string(),
+  frameworks: z.array(ComplianceTargetSchema),
+  findings: z.array(ComplianceControlFindingSchema),
+  passed: z.boolean(),
+  gap_count: z.number().int(),
+});
+export type ComplianceReport = z.infer<typeof ComplianceReportSchema>;
+
+// ---------------------------------------------------------------------------
 // 4. VerifyReport (verify -> report)
 // ---------------------------------------------------------------------------
 export const CheckResultSchema = z.object({
@@ -275,6 +394,7 @@ export const NodeNameSchema = z.enum([
   "intake",
   "planner",
   "readiness_check",
+  "compliance_check",
   "iac_generator",
   "policy_validator",
   "approval_gate",
@@ -358,6 +478,7 @@ export interface PipelineState {
   readiness_report?: ReadinessReport;
   iac_payload?: IaCPayload;
   policy_report?: PolicyReport;
+  compliance_report?: ComplianceReport;
   verify_report?: VerifyReport;
   decision?: Decision;
   deploy_ok?: boolean;

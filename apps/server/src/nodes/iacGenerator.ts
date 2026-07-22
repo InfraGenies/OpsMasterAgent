@@ -7,6 +7,7 @@ import {
   type CapacityPlanOption,
   type IaCFile,
   type IaCPayload,
+  type PlatformArchetype,
 } from "@ops-master/shared";
 import { loadPrompt } from "../llm/promptLoader.js";
 import { runLLMJson } from "../llm/runLLMJson.js";
@@ -38,8 +39,23 @@ function buildUserPrompt(plan: CapacityPlanOption, isModify: boolean, hasDiff: b
 function mockIacGenerator(
   plan: CapacityPlanOption,
   demoWeakSecret: boolean,
-  isSelfCorrection: boolean
+  isSelfCorrection: boolean,
+  enterpriseArchetype?: PlatformArchetype | null
 ): { template_id: TemplateId; variables: Record<string, unknown> } | { error: "no_template"; needed: string } {
+  // Enterprise Architecture Advisor (Phase 1 interim, agent-md-files/02c-compliance-check.md):
+  // reuses UC-9's existing Terraform templates as a stand-in for the
+  // archetype's compute layer — dedicated compute templates per archetype
+  // land in Phase 2 (enterpriseCatalog.ts). solo/team archetypes get the
+  // ECS Fargate template; scale_up/enterprise (Kubernetes-based) archetypes
+  // get the EKS one.
+  if (enterpriseArchetype) {
+    const template_id: TemplateId =
+      enterpriseArchetype === "scale_up_eks" || enterpriseArchetype === "enterprise_eks_landing_zone"
+        ? "tf-eks-v1"
+        : "tf-ecs-fargate-v1";
+    return { template_id, variables: {} };
+  }
+
   // AWS/Terraform path (UC-9): a plan carrying managed_service substitutions
   // is a fixed, known topology, not the generic compose engine — bypass the
   // single-app-service guard below entirely and pick by tier.
@@ -135,6 +151,8 @@ export interface IacGeneratorInput {
   feedback?: string;
   /** Demo-only trigger (see mockIacGenerator) so the self-correction loop is exercisable without a real LLM. */
   demoWeakSecret?: boolean;
+  /** Set when CapacityPlan.architecture_recommendation is present — selects the Phase-1 interim compute template by archetype instead of the generic compose engine. */
+  enterpriseArchetype?: PlatformArchetype | null;
 }
 
 export type IacGeneratorOutput =
@@ -146,7 +164,8 @@ export async function runIacGenerator(input: IacGeneratorInput): Promise<IacGene
     schema: IaCGeneratorLLMOutputSchema,
     system: SYSTEM_PROMPT,
     user: buildUserPrompt(input.plan, input.isModify, input.diffFrom !== null, input.feedback),
-    mock: () => mockIacGenerator(input.plan, input.demoWeakSecret ?? false, input.feedback !== undefined),
+    mock: () =>
+      mockIacGenerator(input.plan, input.demoWeakSecret ?? false, input.feedback !== undefined, input.enterpriseArchetype),
     node: "iac_generator",
   });
 

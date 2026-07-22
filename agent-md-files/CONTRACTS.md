@@ -60,6 +60,49 @@ Not in the original agent set — see `02b-readiness-check.md` for why and how t
 `skipped` check (couldn't determine, e.g. no docker CLI on this machine) never blocks. `blockers` is the
 `detail` of every failing, blocking check, surfaced verbatim in the refusal reason.
 
+## 2c. EnterpriseContext & ArchitectureRecommendation  (intake → planner, Enterprise Architecture Advisor mode)
+
+Not in the original agent set — see `02c-compliance-check.md`. Populated only when `intake` detects
+business-context signals (compliance target, team size, RPO/RTO, industry domain) in `raw_text`; absent/null
+for every other use case. `PlanRequest` gains two fields (`enterprise_mode`, `enterprise_context`); the
+resulting `ArchitectureRecommendation` rides on `CapacityPlan` (once per request, not once per priced tier,
+since org-scale/criticality/compliance don't vary by tier).
+
+```json
+{
+  "enterprise_context": {
+    "industry_domain": "payments",
+    "compliance_targets": ["pci_dss"],
+    "expected_users": 8000000,
+    "team_size": null,
+    "org_scale": "solo",
+    "multi_region": true,
+    "rpo_minutes": 5,
+    "rto_minutes": 15,
+    "signal_reasoning": "\"payment platform\" -> industry_domain=payments; \"PCI-DSS\" -> compliance_targets=[pci_dss]; \"8 million users\" -> expected_users; \"multi-region DR\" -> multi_region; \"RPO<5min\"/\"RTO<15min\" parsed directly; team size not stated -> org_scale defaults to solo (org-scale and criticality are independent axes)."
+  },
+  "architecture_recommendation": {
+    "archetype": "solo_ecs_fargate",
+    "archetype_reasoning": "org_scale=solo (team size unstated) -> smallest platform archetype, independent of workload criticality.",
+    "criticality_score": 14,
+    "criticality_band": "very_high",
+    "criticality_reasoning": "compliance target present (+3), payments domain (+3), users>=1M (+2), RPO<=15min (+2), RTO<=30min (+2), multi_region (+2) = 14/14 -> very_high.",
+    "managed_controls": [
+      { "name": "AWS Shield Advanced", "category": "dr_ha", "triggered_by": "criticality", "reasoning": "very_high band requires DDoS protection beyond the AWS Shield Standard default.", "compliance_tags": ["PCI-DSS-6.6"], "estimated_cost_usd_monthly": 3000, "terraform_bundle_template_id": "tf-shield-advanced-v1" }
+    ],
+    "compliance_overlay": ["pci_dss"],
+    "total_controls_cost_usd_monthly": 3000
+  }
+}
+```
+
+`org_scale` (`solo|team|scale_up|enterprise`, by team size band) selects a `PlatformArchetype` — the
+*platform* choice (ECS vs EKS, single- vs multi-account). `criticality_band` (`low|medium|high|very_high`,
+a weighted score over compliance/domain/scale/RPO/RTO/multi-region signals) adds security/DR controls on
+top of whatever archetype was picked. `compliance_targets` layers a third, independent set of mandatory
+controls a framework requires regardless of the other two axes. All three compose into one deduplicated
+`managed_controls` list — see `nodes/enterpriseRulesEngine.ts` for the exact scoring formula and thresholds.
+
 ## 3. IaCPayload  (iac_generator → approval gate → deploy)
 
 ```json
@@ -103,6 +146,48 @@ Not in the original agent set — see `03b-policy-validator.md` for why and how 
 `severity`: `critical | high | medium | low`. `passed` is true iff no `critical`/`high` finding remains.
 Only findings with `auto_fixable: true` drive a retry back to `iac_generator`; everything else is
 reported once and shown to the human at the approval gate rather than looping.
+
+## 3c. ComplianceReport  (compliance_check → approval gate)
+
+Not in the original agent set — see `02c-compliance-check.md`. Enterprise Architecture Advisor mode only;
+absent for every other use case. Runs once, pre-flight (alongside `readiness_check`, before `iac_generator`
+is ever called) rather than in a retry loop like `policy_validator`, because every finding here is rooted in
+`ArchitectureRecommendation.managed_controls` — a planner-time decision `iac_generator` has no lever over,
+so there is nothing an auto-fix retry could change.
+
+```json
+{
+  "request_id": "req-2026-0001",
+  "frameworks": ["pci_dss"],
+  "findings": [
+    {
+      "control_id": "PCI-DSS-3.4",
+      "framework": "pci_dss",
+      "status": "satisfied",
+      "severity": "high",
+      "message": "Encryption at rest required for cardholder data",
+      "satisfied_by": "AWS KMS"
+    },
+    {
+      "control_id": "PCI-DSS-10.2",
+      "framework": "pci_dss",
+      "status": "gap",
+      "severity": "high",
+      "message": "Audit logging with log-file validation required",
+      "satisfied_by": null
+    }
+  ],
+  "passed": false,
+  "gap_count": 1
+}
+```
+
+`status`: `satisfied | gap | not_applicable`. `passed` is true iff no `critical`/`high` gap remains — same
+formula shape as `PolicyReport.passed`. Unresolved gaps never block the run; they ride to the approval gate
+as a visible warning, consistent with `policy_validator`'s "human makes the final call" guardrail. The
+`control_id`→AWS-service mapping here is illustrative (a demo gap-analysis), not audited against PCI-DSS
+v4/HIPAA Security Rule text — a real compliance review should replace the mapping table before this is
+presented as anything more.
 
 ## 4. VerifyReport  (verify → report)
 
