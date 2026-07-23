@@ -2,10 +2,15 @@ import type { Run } from "@ops-master/shared";
 
 const STATUS_STYLE: Record<Run["status"], { badge: string; dot: string; label: string }> = {
   running: { badge: "border-sky-800 bg-sky-950/60 text-sky-300", dot: "bg-sky-400 animate-pulse", label: "running" },
+  awaiting_plan_approval: {
+    badge: "border-amber-700 bg-amber-950/60 text-amber-300",
+    dot: "bg-amber-400 animate-pulse",
+    label: "needs plan approval",
+  },
   awaiting_approval: {
     badge: "border-amber-700 bg-amber-950/60 text-amber-300",
     dot: "bg-amber-400 animate-pulse",
-    label: "needs approval",
+    label: "needs deploy approval",
   },
   awaiting_plan_review: {
     badge: "border-indigo-700 bg-indigo-950/60 text-indigo-300",

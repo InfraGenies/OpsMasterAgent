@@ -10,6 +10,7 @@ import { ChatInput } from "./components/ChatInput";
 import { ComplianceReportView } from "./components/ComplianceReportView";
 import { IacFileViewer } from "./components/IacFileViewer";
 import { PipelineStepper } from "./components/PipelineStepper";
+import { PlanApprovalGate } from "./components/PlanApprovalGate";
 import { PlanReviewGate } from "./components/PlanReviewGate";
 import { PolicyReportView } from "./components/PolicyReportView";
 import { ReadinessReportView } from "./components/ReadinessReportView";
@@ -87,7 +88,7 @@ export function App() {
   }
 
   async function handleDecision(
-    action: "approve" | "reject" | "edit" | "accept_plan",
+    action: "approve_plan" | "approve" | "reject" | "edit" | "accept_plan",
     comment: string | null,
     patch?: Record<string, unknown>
   ) {
@@ -198,10 +199,17 @@ export function App() {
               </section>
             )}
 
+            {detail.run.status === "awaiting_plan_approval" && detail.capacity_plan && (
+              <PlanApprovalGate
+                key={detail.capacity_plan.recommended_tier}
+                plan={detail.capacity_plan}
+                onDecision={handleDecision}
+              />
+            )}
+
             {detail.run.status === "awaiting_approval" && detail.capacity_plan && detail.iac_payload && (
               <ApprovalGate
                 key={detail.capacity_plan.recommended_tier}
-                plan={detail.capacity_plan}
                 iac={detail.iac_payload}
                 policy={detail.policy_report}
                 onDecision={handleDecision}

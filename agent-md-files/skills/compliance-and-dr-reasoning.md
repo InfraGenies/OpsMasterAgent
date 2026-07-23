@@ -41,6 +41,16 @@ numbers in this request (RPO/RTO minutes, expected_users, budget signals) — no
 fabricate alternatives with no real basis; skip alternatives_considered entries for controls that
 genuinely have no meaningful substitute (e.g. AWS Organizations for multi-account governance).
 
+COMPLETE THE COST PICTURE, NOT JUST THE ADD-ONS: the managed controls above (WAF, GuardDuty, Shield
+Advanced, Aurora Global Database, etc.) are security/compliance/DR ADD-ONS layered on top of a real
+workload — they are never the whole bill. Every services array you produce for enterprise_mode must also
+include a realistic primary compute service AND a realistic primary data store (an RDS/Aurora-compatible
+managed database is the reasonable default assumption for any real business workload, Multi-AZ if
+criticality_band is high or very_high, single-AZ otherwise), plus baseline networking (at least one NAT
+Gateway). Price all of it in cost_breakdown and estimated_cost_usd_monthly — a total that only reflects
+compute + compliance add-ons with no database or networking cost is incomplete and will read as
+unrealistic to a reviewer who knows what this workload actually costs to run.
+
 GENUINE JUDGMENT, NOT TABLE-MIRRORING: the scoring above is your auditability floor, not the whole job —
 reach every conclusion through reasoning about THIS specific request, not mechanical lookup. In every
 reasoning field, cite the SPECIFIC facts of this request (the actual user count, the actual RPO/RTO minutes

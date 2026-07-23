@@ -30,6 +30,9 @@ import { envIdFor, generateRequestId, projectNameFor } from "./ids.js";
 
 const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>();
 
+/** Both deploy-track gates keep the 30-min timeout (deployment is the eventual intent); only the plan-only track's dedicated review gate ("awaiting_plan_review") is exempt. */
+const TIMEOUT_GATE_STATUSES = ["awaiting_plan_approval", "awaiting_approval"] as const;
+
 function deploymentDirFor(requestId: string): string {
   return path.join(env.DEPLOYMENTS_DIR, requestId);
 }
@@ -139,7 +142,7 @@ export function scheduleApprovalTimeout(requestId: string, sinceIso?: string): v
     timeoutHandles.delete(requestId);
     const store = getStore();
     const run = await store.getRun(requestId);
-    if (run?.status !== "awaiting_approval") return;
+    if (!run || !TIMEOUT_GATE_STATUSES.includes(run.status as (typeof TIMEOUT_GATE_STATUSES)[number])) return;
     await store.writeDecision({
       request_id: requestId,
       action: "reject",
@@ -178,7 +181,7 @@ export async function rehydratePendingApprovals(): Promise<void> {
   const store = getStore();
   const runs = await store.listRuns();
   for (const run of runs) {
-    if (run.status !== "awaiting_approval") continue;
+    if (!TIMEOUT_GATE_STATUSES.includes(run.status as (typeof TIMEOUT_GATE_STATUSES)[number])) continue;
     const events = await store.listAuditEvents(run.request_id);
     const gateEvent = [...events].reverse().find((e) => e.node === "approval_gate" && e.status === "pending");
     scheduleApprovalTimeout(run.request_id, gateEvent?.ts);
@@ -189,7 +192,14 @@ export async function rehydratePendingApprovals(): Promise<void> {
 // Phase 1: intake -> planner -> iac_generator -> approval gate
 // ---------------------------------------------------------------------------
 
-async function reachApprovalGate(
+/**
+ * Gate 1 of the deploy track: is this plan sound and deployable at all?
+ * readiness_check/compliance_check need only the CapacityPlan, no IaC, so
+ * they run here — before a human ever approves the plan, and before a
+ * single iac_generator LLM call is spent. On approval ("approve_plan"),
+ * submitDecision calls reachApprovalGate (Gate 2) directly.
+ */
+async function reachPlanApprovalGate(
   requestId: string,
   planRequest: PlanRequest,
   fullPlan: CapacityPlan,
@@ -199,8 +209,8 @@ async function reachApprovalGate(
   // fullPlan.recommended_tier doubles as "currently selected tier" — the
   // agent's initial pick, or the human's after a tier-switch edit (see
   // applyCapacityPlanPatch). Only this one tier's flat plan flows through
-  // readiness/iac/policy below; all options still ride along in fullPlan for
-  // the approval-gate comparison UI.
+  // readiness below; all options still ride along in fullPlan for the
+  // plan-approval-gate comparison UI.
   const plan = selectOption(fullPlan, fullPlan.recommended_tier);
 
   // readiness_check (02b-readiness-check.md): deterministic pre-flight scan,
@@ -257,6 +267,34 @@ async function reachApprovalGate(
     });
     broadcastEvent("node_finished", requestId, "compliance_check", compliance);
   }
+
+  await store.updateRunStatus(requestId, "awaiting_plan_approval");
+  await logAudit(store, {
+    request_id: requestId,
+    node: "approval_gate",
+    actor: "agent",
+    status: "pending",
+    detail: "awaiting human plan approval (Gate 1 — no IaC generated yet)",
+  });
+  broadcastEvent("awaiting_plan_approval", requestId, "approval_gate", { plan: fullPlan });
+  scheduleApprovalTimeout(requestId);
+}
+
+/**
+ * Gate 2 of the deploy track: is the generated code correct and safe?
+ * Entered only after a human approves the plan at Gate 1 ("approve_plan").
+ * readiness_check/compliance_check already happened at Gate 1 — this is
+ * purely iac_generator/policy_validator's retry loop, then the final human
+ * decision before deploy.
+ */
+async function reachApprovalGate(
+  requestId: string,
+  planRequest: PlanRequest,
+  fullPlan: CapacityPlan,
+  existing: ExistingEnv | null
+): Promise<void> {
+  const store = getStore();
+  const plan = selectOption(fullPlan, fullPlan.recommended_tier);
 
   // Demo hook (mirrors nodes/verify.ts's forceFail): lets the self-correction
   // loop be exercised end-to-end with MOCK_LLM=true and no real API key.
@@ -335,7 +373,7 @@ async function reachApprovalGate(
     node: "approval_gate",
     actor: "agent",
     status: "pending",
-    detail: "awaiting human decision",
+    detail: "awaiting human deploy approval (Gate 2)",
   });
   broadcastEvent("awaiting_approval", requestId, "approval_gate", { plan: fullPlan, iac: iacValue, policy: policyReport });
   scheduleApprovalTimeout(requestId);
@@ -401,7 +439,7 @@ async function runIntakeThroughGate(
     await reachPlanReviewGate(requestId, planRequest, plannerResult.value);
     return;
   }
-  await reachApprovalGate(requestId, planRequest, plannerResult.value, existing);
+  await reachPlanApprovalGate(requestId, planRequest, plannerResult.value, existing);
 }
 
 export async function startRun(rawText: string, existingEnvId: string | null, planOnly = false): Promise<string> {
@@ -584,7 +622,11 @@ async function reworkPlan(
     await reachPlanReviewGate(requestId, planRequest, plan);
     return;
   }
-  await reachApprovalGate(requestId, planRequest, plan, existing);
+  // Every reject/edit returns to Gate 1 for re-approval of the (possibly
+  // changed) plan — never straight back to Gate 2. This also means an
+  // "edit" (tier switch / replica tweak) is free (no LLM call) until the
+  // human clicks "approve_plan" again.
+  await reachPlanApprovalGate(requestId, planRequest, plan, existing);
 }
 
 async function runDeployThroughReport(requestId: string): Promise<void> {
@@ -677,6 +719,13 @@ async function runDeployThroughReport(requestId: string): Promise<void> {
   broadcastEvent("run_finished", requestId, "report", { status: "deployed", report: reportMd, verify: verifyReport, endpoints });
 }
 
+/** Which actions make sense at each gate — a mismatched action/status pair is a clear client error, not a silent no-op. */
+const ALLOWED_ACTIONS_BY_STATUS: Record<string, DecisionAction[]> = {
+  awaiting_plan_approval: ["approve_plan", "reject", "edit"],
+  awaiting_approval: ["approve", "reject"],
+  awaiting_plan_review: ["accept_plan", "reject"],
+};
+
 export async function submitDecision(
   requestId: string,
   action: DecisionAction,
@@ -687,8 +736,12 @@ export async function submitDecision(
   const store = getStore();
   const run = await store.getRun(requestId);
   if (!run) throw new HttpError(404, "run not found");
-  if (run.status !== "awaiting_approval" && run.status !== "awaiting_plan_review") {
+  const allowedActions = ALLOWED_ACTIONS_BY_STATUS[run.status];
+  if (!allowedActions) {
     throw new HttpError(409, `run is not awaiting a decision (status=${run.status})`);
+  }
+  if (!allowedActions.includes(action)) {
+    throw new HttpError(400, `action "${action}" is not valid while status=${run.status} (expected one of: ${allowedActions.join(", ")})`);
   }
 
   clearApprovalTimeout(requestId); // no-op if never armed (plan-only runs never schedule one)
@@ -701,6 +754,25 @@ export async function submitDecision(
     detail: `${action}${comment ? `: ${comment}` : ""}`,
   });
   broadcastEvent("node_finished", requestId, "approval_gate", { action, comment });
+
+  if (action === "approve_plan") {
+    (async () => {
+      const planRequest = await loadLatestNodeOutput<PlanRequest>(store, requestId, "intake");
+      const fullPlan = await loadLatestNodeOutput<CapacityPlan>(store, requestId, "planner");
+      if (!planRequest || !fullPlan) {
+        await refuseRun(requestId, "internal error: lost pipeline state during plan approval");
+        return;
+      }
+      let existing: ExistingEnv | null = null;
+      if (planRequest.operation === "modify") existing = await resolveExistingEnv(store, planRequest);
+      await reachApprovalGate(requestId, planRequest, fullPlan, existing);
+    })().catch(async (err) => {
+      console.error(`[pipeline] plan-approval phase failed for ${requestId}:`, err);
+      await store.updateRunStatus(requestId, "failed", new Date().toISOString()).catch(() => {});
+      broadcastEvent("run_finished", requestId, undefined, { status: "failed", error: String(err) });
+    });
+    return;
+  }
 
   if (action === "approve") {
     runDeployThroughReport(requestId).catch(async (err) => {

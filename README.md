@@ -157,7 +157,17 @@ auto-reject timeout, since a plan-only run has nothing dangling to force a decis
 scoping/estimation requests (a small-team app idea, a large-org sizing conversation) where generating
 deployable IaC would be premature — see `04-approval-gate.md`'s "Plan-only review gate" section.
 
-A fourth addition: a **skills library** (`agent-md-files/skills/*.md`, runtime copies under
+A fourth addition: the deploy track's single approval gate is now **two sequential gates**
+(`orchestrator/pipeline.ts: reachPlanApprovalGate` / `reachApprovalGate`, `RunStatus`
+`awaiting_plan_approval` → `awaiting_approval`, UI: `web/src/components/PlanApprovalGate.tsx` /
+`ApprovalGate.tsx`). Gate 1 approves the capacity plan itself (`readiness_check`/`compliance_check` already
+ran, no IaC exists yet); only on approval does `iac_generator`/`policy_validator` run, reaching Gate 2 to
+approve the actual generated code and deploy commands. Rejecting at either gate always returns to Gate 1,
+never straight back to Gate 2 — a changed plan needs re-approval before new IaC is generated for it. Both
+gates keep the 30-minute auto-reject timeout (both are part of the deploy-intent track); only the
+plan-only track's review gate is exempt. See `04-approval-gate.md`'s "Gate 1"/"Gate 2" sections.
+
+A fifth addition: a **skills library** (`agent-md-files/skills/*.md`, runtime copies under
 `apps/server/src/skills/`, loaded via `llm/skillLoader.ts`) — reusable knowledge modules (sizing formulas,
 AWS managed-service substitution, compliance/DR reasoning, IaC-writing conventions) spliced into node
 prompts at runtime instead of duplicated inline text, so a capability can be edited in one place regardless
@@ -182,7 +192,7 @@ expects, so no allow-list change was needed.
 | `02b-readiness-check.md` | `apps/server/src/nodes/readinessCheck.ts` (deterministic, no prompt file — no LLM call), wired into `orchestrator/pipeline.ts: reachApprovalGate`, UI: `web/src/components/ReadinessReportView.tsx` |
 | `03-iac-generator.md` | `apps/server/src/nodes/iacGenerator.ts`, templates in `templates/catalog.ts`, prompt at `prompts/03-iac-generator.md`, skills at `skills/{writing-compose-iac,writing-terraform-iac,novel-requirement-reasoning}.md` |
 | `03b-policy-validator.md` | `apps/server/src/nodes/policyValidator.ts` (deterministic, no prompt file — no LLM call), self-correction loop lives in `orchestrator/pipeline.ts: reachApprovalGate`, UI: `web/src/components/PolicyReportView.tsx` |
-| `04-approval-gate.md` | `orchestrator/pipeline.ts` (`reachApprovalGate`, `submitDecision`, timeout), UI: `web/src/components/ApprovalGate.tsx` |
+| `04-approval-gate.md` | `orchestrator/pipeline.ts` (`reachPlanApprovalGate` = Gate 1, `reachApprovalGate` = Gate 2, `submitDecision`, timeout), UI: `web/src/components/PlanApprovalGate.tsx` (Gate 1), `ApprovalGate.tsx` (Gate 2) |
 | `05-deploy-agent.md` | `apps/server/src/nodes/deploy.ts`, `commandAllowList.ts` |
 | `06-verify-agent.md` | `apps/server/src/nodes/verify.ts` |
 | `07-audit-store.md` | `apps/server/src/store/*`, `supabase/schema.sql`, UI: `web/src/components/AuditTimeline.tsx` |

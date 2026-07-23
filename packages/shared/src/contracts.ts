@@ -460,6 +460,9 @@ export type AuditEvent = z.infer<typeof AuditEventSchema>;
 // ---------------------------------------------------------------------------
 export const RunStatusSchema = z.enum([
   "running",
+  /** Deploy track Gate 1: paused for human approval of the capacity plan itself, before iac_generator ever runs. Distinct from "awaiting_plan_review" (the plan-only track's terminal, timeout-free review) — this gate leads to Gate 2 ("awaiting_approval") on approval, and keeps the 30-min timeout since deployment is the eventual intent. */
+  "awaiting_plan_approval",
+  /** Deploy track Gate 2: paused for human approval of the generated IaC + deploy commands, after iac_generator/policy_validator have run. */
   "awaiting_approval",
   /** Plan-only track: paused for human review of the plan itself, no IaC/deploy exists for this run and no auto-reject timeout applies. */
   "awaiting_plan_review",
@@ -493,7 +496,7 @@ export const EnvironmentSchema = z.object({
 });
 export type EnvironmentRecord = z.infer<typeof EnvironmentSchema>;
 
-export const DecisionActionSchema = z.enum(["approve", "reject", "edit", "accept_plan"]);
+export const DecisionActionSchema = z.enum(["approve_plan", "approve", "reject", "edit", "accept_plan"]);
 export type DecisionAction = z.infer<typeof DecisionActionSchema>;
 
 export const DecisionSchema = z.object({
@@ -535,6 +538,7 @@ export const WsEventSchema = z.object({
   type: z.enum([
     "node_started",
     "node_finished",
+    "awaiting_plan_approval",
     "awaiting_approval",
     "awaiting_plan_review",
     "log_line",

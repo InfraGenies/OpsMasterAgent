@@ -69,7 +69,10 @@ const MANAGED_CONTROL_USD_MONTHLY: Record<string, number> = {
   "AWS Secrets Manager": 5,
   "AWS KMS": 3,
   "Amazon Route 53 (health-check failover)": 1.5,
-  "Aurora Global Database (cross-region replica)": 600,
+  // Cost of the cross-region secondary specifically — the primary cluster's
+  // own cost is priced separately via estimatePrimaryDatabaseMonthlyCost,
+  // same as a normal RDS Multi-AZ standby isn't folded into this line either.
+  "Aurora Global Database": 600,
   "Amazon OpenSearch Service": 65,
   "Amazon SQS": 10,
   "Amazon EventBridge": 5,
@@ -85,6 +88,35 @@ export function estimateManagedControlsMonthlyCost(controlNames: string[]): Cost
   return roundedBreakdown(
     controlNames.map((name) => ({ label: name, usd: MANAGED_CONTROL_USD_MONTHLY[name] ?? 0 }))
   );
+}
+
+/**
+ * Primary managed-database cost for the Enterprise Architecture Advisor
+ * (nodes/enterpriseRulesEngine.ts): every real business workload needs one,
+ * regardless of criticality band, so this was previously missing entirely
+ * from buildEnterpriseOptions's cost estimate — only the very_high band's
+ * Aurora Global Database *cross-region replica* add-on was ever priced, with
+ * no primary cluster underneath it. Sized by band, same low/medium
+ * single-AZ vs. high/very_high Multi-AZ split every other tier in this
+ * codebase already uses (see AVAILABILITY_NOTES_BY_BAND).
+ */
+export function estimatePrimaryDatabaseMonthlyCost(band: "low" | "medium" | "high" | "very_high"): CostEstimate {
+  const multiAz = band === "high" || band === "very_high";
+  const hourlyRate = multiAz ? RDS_T3_SMALL_USD_PER_HOUR * 2 : RDS_T3_MICRO_USD_PER_HOUR;
+  const label = multiAz ? "RDS/Aurora-compatible primary (Multi-AZ)" : "RDS/Aurora-compatible primary (single-AZ)";
+  return roundedBreakdown([{ label, usd: hourlyRate * HOURS_PER_MONTH }]);
+}
+
+/**
+ * Baseline networking for the Enterprise Architecture Advisor — a NAT
+ * Gateway per AZ the archetype spans, same reasoning UC-9's economy/HA
+ * tiers already use ("1 NAT Gateway" vs. "2 NAT Gateways for multi-AZ
+ * egress"). solo/team archetypes are single-AZ; scale_up/enterprise assume
+ * 2 AZs for the landing-zone-grade baseline.
+ */
+export function estimateNetworkingMonthlyCost(archetype: string): CostEstimate {
+  const natGateways = archetype === "scale_up_eks" || archetype === "enterprise_eks_landing_zone" ? 2 : 1;
+  return roundedBreakdown([{ label: `NAT Gateway (${natGateways})`, usd: natGateways * NAT_GATEWAY_USD_PER_HOUR * HOURS_PER_MONTH }]);
 }
 
 export function estimateEksMonthlyCost(nodeCount: number, natGateways: number): CostEstimate {

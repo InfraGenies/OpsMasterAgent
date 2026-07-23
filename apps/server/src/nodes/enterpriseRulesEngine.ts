@@ -11,7 +11,11 @@ import type {
   PlatformArchetype,
   ServiceSpec,
 } from "@ops-master/shared";
-import { estimateManagedControlsMonthlyCost } from "../pricing/awsRateTable.js";
+import {
+  estimateManagedControlsMonthlyCost,
+  estimateNetworkingMonthlyCost,
+  estimatePrimaryDatabaseMonthlyCost,
+} from "../pricing/awsRateTable.js";
 import { estimateMonthlyCost } from "../pricing/rateTable.js";
 
 /**
@@ -564,7 +568,13 @@ export function buildEnterpriseOptions(planRequest: PlanRequest, humanFeedback?:
   }
   const recommendation = buildArchitectureRecommendation(ctx);
   const computeSpec = COMPUTE_SPEC_BY_ARCHETYPE[recommendation.archetype];
+  const dbMultiAz = recommendation.criticality_band === "high" || recommendation.criticality_band === "very_high";
 
+  // Every real business workload needs a data store — previously missing
+  // entirely from this estimate, which made the total look implausibly low
+  // (compute + security/compliance add-ons, but no actual database or
+  // networking cost). Sized by criticality band, same single-AZ vs. Multi-AZ
+  // split every other tier in this codebase already uses.
   const services: ServiceSpec[] = [
     {
       name: "app",
@@ -574,9 +584,21 @@ export function buildEnterpriseOptions(planRequest: PlanRequest, humanFeedback?:
       replicas: computeSpec.replicas,
       ports: [8080],
     },
+    {
+      name: "db",
+      image: "illustrative managed primary data store (RDS/Aurora-compatible) — assumed for any real business workload",
+      cpu: "n/a (managed service)",
+      memory: "n/a (managed service)",
+      replicas: 1,
+      ports: [5432],
+      managed_service: "rds",
+      multi_az: dbMultiAz,
+    },
   ];
 
-  const computeCost = estimateMonthlyCost(services, []);
+  const computeCost = estimateMonthlyCost([services[0]], []);
+  const dbCost = estimatePrimaryDatabaseMonthlyCost(recommendation.criticality_band);
+  const networkCost = estimateNetworkingMonthlyCost(recommendation.archetype);
   const controlsCost = estimateManagedControlsMonthlyCost(recommendation.managed_controls.map((c) => c.name));
 
   const feedbackSuffix = humanFeedback
@@ -588,8 +610,11 @@ export function buildEnterpriseOptions(planRequest: PlanRequest, humanFeedback?:
       ? ` Managed controls added: ${recommendation.managed_controls.map((c) => c.name).join(", ")}.`
       : " No additional managed controls required at this criticality/org-scale combination.";
 
+  const dbSummary = ` Primary data store assumed (${dbMultiAz ? "Multi-AZ" : "single-AZ"} RDS/Aurora-compatible) since every real business workload needs one, plus baseline NAT Gateway networking.`;
+
   const reasoning =
-    `${recommendation.archetype_reasoning} ${recommendation.criticality_reasoning}${controlsSummary}` + feedbackSuffix;
+    `${recommendation.archetype_reasoning} ${recommendation.criticality_reasoning}${dbSummary}${controlsSummary}` +
+    feedbackSuffix;
 
   const option: CapacityPlanOption = {
     tier: "balanced",
@@ -599,8 +624,9 @@ export function buildEnterpriseOptions(planRequest: PlanRequest, humanFeedback?:
     reasoning,
     feasible: true,
     infeasibility_reason: null,
-    estimated_cost_usd_monthly: computeCost.totalUsdMonthly + controlsCost.totalUsdMonthly,
-    cost_breakdown: [...computeCost.breakdown, ...controlsCost.breakdown],
+    estimated_cost_usd_monthly:
+      computeCost.totalUsdMonthly + dbCost.totalUsdMonthly + networkCost.totalUsdMonthly + controlsCost.totalUsdMonthly,
+    cost_breakdown: [...computeCost.breakdown, ...dbCost.breakdown, ...networkCost.breakdown, ...controlsCost.breakdown],
     cost_basis: "rate_table",
     headroom_pct: 0,
     availability_notes: AVAILABILITY_NOTES_BY_BAND[recommendation.criticality_band],
