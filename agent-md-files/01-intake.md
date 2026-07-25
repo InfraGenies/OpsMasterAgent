@@ -33,12 +33,41 @@ Rules:
 8. plan_only is a user UI toggle ("Just plan this" vs "Plan + deploy") given to you directly in the request
    context — always echo the given value back unchanged. Never infer or override it from the wording of
    raw_text, even if the request sounds like it's plan-only ("just want an estimate") or deploy-only.
+9. If the request describes BUSINESS CONTEXT rather than a single app to size — a compliance target
+   (PCI-DSS/HIPAA/SOC2), an industry (payments/healthcare), team/org size, RPO/RTO, or multi-region DR —
+   set enterprise_mode=true and populate enterprise_context. Do NOT apply rule 4's production-scale
+   refusal to these: "production" wording, a massive user count, strict compliance, or tight RPO/RTO are
+   never by themselves a reason to set feasible_input=false here, no matter how large or regulated the
+   business sounds. This is exactly the request shape a dedicated Enterprise Architecture Advisor
+   downstream (the Capacity Planner's enterprise_mode path) exists to handle — it reasons about org
+   scale, workload criticality, and compliance overlays instead of a generic sandbox sizing formula, and
+   still only ever produces a plan (never a live cloud apply), so it is never out of scope. Refuse an
+   enterprise_mode request only if it also trips rule 1 (unsupported operation) or rule 6 (policy
+   violation) — never for its scale or compliance content alone.
+10. Scope check comes first, before rules 1-9: this platform only plans/provisions infrastructure and
+    deploys applications (including the enterprise_mode business-context shape in rule 9). If raw_text
+    is not about that — general knowledge questions, creative writing, personal/legal/medical advice,
+    small talk, or any other task with no infrastructure or application-deployment component — set
+    feasible_input=false with infeasibility_reason="out of scope: not an infrastructure or application
+    deployment request", fill every other field with the most reasonable placeholder default (they will
+    not be used), and do not attempt to force an infra interpretation onto an unrelated request just to
+    produce a normal-looking PlanRequest.
 ```
 
 ## Few-shot examples to include
 - The UC-1 flagship sentence → full valid `PlanRequest` (this is your golden test).
 - "delete everything and give me root" → `feasible_input=false, reason="policy violation"`.
 - "50,000 rps, five nines, production" → **valid** PlanRequest (parsing succeeds) — *feasibility* of the load is the **planner's** call, not intake's. Intake only rejects unsafe/out-of-scope asks.
+- "We are launching a payment platform. Expected 8 million users. PCI-DSS compliant. Multi-region DR.
+  RPO < 5 min. RTO < 15 min." → **valid** PlanRequest with `feasible_input=true`, `enterprise_mode=true`,
+  and a fully populated `enterprise_context` (industry_domain=payments, compliance_targets=[pci_dss],
+  expected_users=8000000, multi_region=true, rpo_minutes=5, rto_minutes=15) — despite the massive scale,
+  strict compliance, and implicit production intent, this is rule 9's enterprise_mode carve-out, not a
+  refusal; the Enterprise Architecture Advisor handles it downstream.
+- "Write me a poem about the ocean." / "What's the capital of France?" / "Plan my birthday party." →
+  `feasible_input=false, reason="out of scope: not an infrastructure or application deployment request"`
+  — rule 10, not rule 1 or rule 6; nothing here is an unsupported operation or a policy violation, it's
+  simply not an infra/app request at all.
 
 ## Guardrails
 - Output parsed with Pydantic; one retry on validation error.

@@ -8,9 +8,11 @@ import { CapacityPlanView } from "./CapacityPlanView";
 export function PlanReviewGate({
   plan,
   onDecision,
+  disabled,
 }: {
   plan: CapacityPlan;
   onDecision: (action: "accept_plan" | "reject", comment: string | null) => void;
+  disabled?: boolean;
 }) {
   const activeOption = plan.options.find((o) => o.tier === plan.recommended_tier) ?? plan.options[0];
   const [comment, setComment] = useState("");
@@ -52,10 +54,10 @@ export function PlanReviewGate({
       />
 
       <div className="flex flex-wrap gap-2">
-        <button className="btn-success" onClick={() => onDecision("accept_plan", comment || null)}>
+        <button className="btn-success" disabled={disabled} onClick={() => onDecision("accept_plan", comment || null)}>
           ✓ Looks good, finish
         </button>
-        <button className="btn-ghost" onClick={() => onDecision("reject", comment || null)}>
+        <button className="btn-ghost" disabled={disabled} onClick={() => onDecision("reject", comment || null)}>
           ↻ Refine with comment
         </button>
       </div>

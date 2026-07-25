@@ -885,6 +885,13 @@ export async function submitDecision(
   broadcastEvent("node_finished", requestId, "approval_gate", { action, comment });
 
   if (action === "approve_plan") {
+    // Flip status off "awaiting_plan_approval" synchronously, before the async work below
+    // starts — reachApprovalGate can take minutes (iac_generator/policy_validator retries).
+    // Leaving status unchanged during that window lets a second "approve_plan" submitted
+    // before the UI's own disabled-button state naturally resets (App.tsx only disables it
+    // for the HTTP round-trip, not for the fire-and-forgotten pipeline work) pass this same
+    // status check again and kick off a second concurrent run.
+    await store.updateRunStatus(requestId, "running");
     (async () => {
       const planRequest = await loadLatestNodeOutput<PlanRequest>(store, requestId, "intake");
       const fullPlan = await loadLatestNodeOutput<CapacityPlan>(store, requestId, "planner");
@@ -904,6 +911,13 @@ export async function submitDecision(
   }
 
   if (action === "approve") {
+    // Same reasoning as approve_plan above: flip status off "awaiting_approval" before
+    // starting the build/deploy sequence, which can run for minutes. Without this, a
+    // duplicate "approve" click (e.g. because the UI still shows the gate) re-passes the
+    // status check and starts a second concurrent runDeployThroughReport for the same
+    // requestId — this is what caused a real build failure (colliding "git clone" into the
+    // same deployment dir from two simultaneous runs).
+    await store.updateRunStatus(requestId, "running");
     runDeployThroughReport(requestId).catch(async (err) => {
       console.error(`[pipeline] deploy phase failed for ${requestId}:`, err);
       await store.updateRunStatus(requestId, "failed", new Date().toISOString()).catch(() => {});

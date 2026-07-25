@@ -52,7 +52,7 @@ export function archetypeForOrgScale(orgScale: OrgScale): PlatformArchetype {
   return ARCHETYPE_BY_ORG_SCALE[orgScale];
 }
 
-const ARCHETYPE_REASONING: Record<PlatformArchetype, string> = {
+export const ARCHETYPE_REASONING: Record<PlatformArchetype, string> = {
   solo_ecs_fargate:
     "1-3 person team: single ECS Fargate service, GitHub Actions deploying directly, CloudWatch logs — no platform team to operate anything heavier.",
   team_ecs_fargate_ha:

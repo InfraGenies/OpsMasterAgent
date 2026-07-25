@@ -61,9 +61,19 @@ const POLICY_VIOLATION_PATTERNS = [
   /run arbitrary/i,
 ];
 
+// Rule 10: everything this platform does is infra provisioning or app
+// deployment (including the enterprise_mode business-context shape from
+// rule 9, covered separately via detectEnterpriseMode). This is a broad net
+// on purpose — false positives (treating a borderline request as in-scope)
+// are cheap, a false negative (refusing a real infra ask) is not.
+const INFRA_SIGNAL_RE =
+  /\b(deploy(?:ment)?|provision|infra(?:structure)?|servers?|app(?:lication)?s?|\bapi\b|microservices?|\bservices?\b|databases?|\bdbs?\b|containers?|docker|kubernetes|k8s|compose|terraform|\bcloud\b|environments?|\benv\b|clusters?|replicas?|capacity|\bscal(?:e|ing)\b|load\s*balanc\w*|\brps\b|requests?\s*\/?\s*s(?:ec(?:ond)?)?|\btraffic\b|\brepo(?:sitory)?\b|pipelines?|ci\/cd|hosting|spin\s+(?:up|down)|\blaunch\b|set\s*up|\bbuild\b|node\.?js|\bpython\b|flask|fastapi|\bjava\b|spring|static\s+site|\bhtml\b|postgres\w*|mysql|redis|mongo\w*|\baws\b|\bgcp\b|\bazure\b|\bvm\b|instances?|\bnetwork\b|firewall|\bdns\b|\bmemory\b|\bcpu\b|storage|\bvolumes?\b|backups?|monitoring|logging|\bhelm\b|nginx|\bssl\b|certificate|\bdomain\b|tear\s*down|\bdestroy\b|rollback|rollout|todo\s*app|web\s*app|platform|workload)\b/i;
+
 function mockIntake(requestId: string, rawText: string, planOnly: boolean): PlanRequest {
   const lower = rawText.toLowerCase();
   const policyViolation = POLICY_VIOLATION_PATTERNS.some((p) => p.test(rawText));
+  const outOfScope =
+    !policyViolation && !INFRA_SIGNAL_RE.test(rawText) && !detectEnterpriseMode(rawText);
 
   const rpsMatch = rawText.match(/(\d[\d,]*)\s*(?:req(?:uests)?\/?s(?:econd)?|rps)/i);
   const rps = rpsMatch ? Number(rpsMatch[1].replace(/,/g, "")) : null;
@@ -121,12 +131,14 @@ function mockIntake(requestId: string, rawText: string, planOnly: boolean): Plan
           ? [`load stated as ~${concurrentUsers} concurrent users; planner will convert to rps`]
           : ["expected load not stated; assuming light traffic for sizing"]
         : [],
-    feasible_input: !policyViolation && !wantsRealProdCloud,
+    feasible_input: !policyViolation && !outOfScope && !wantsRealProdCloud,
     infeasibility_reason: policyViolation
       ? "policy violation"
-      : wantsRealProdCloud
-        ? "sandbox-only platform"
-        : null,
+      : outOfScope
+        ? "out of scope: not an infrastructure or application deployment request"
+        : wantsRealProdCloud
+          ? "sandbox-only platform"
+          : null,
     enterprise_mode: enterpriseMode,
     enterprise_context: enterpriseMode ? mockExtractEnterpriseContext(rawText) : null,
   };

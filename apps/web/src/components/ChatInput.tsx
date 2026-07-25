@@ -9,13 +9,13 @@ export function ChatInput({
   disabled: boolean;
 }) {
   const [text, setText] = useState("");
-  const [planOnly, setPlanOnly] = useState(false);
+  const [planOnly, setPlanOnly] = useState(true);
 
   function submit() {
     if (!text.trim() || disabled) return;
     onSubmit(text.trim(), planOnly);
     setText("");
-    setPlanOnly(false);
+    setPlanOnly(true);
   }
 
   return (

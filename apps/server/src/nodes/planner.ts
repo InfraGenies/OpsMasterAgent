@@ -13,7 +13,13 @@ import { runLLMJson } from "../llm/runLLMJson.js";
 import { estimateEcsFargateMonthlyCost, estimateEksMonthlyCost } from "../pricing/awsRateTable.js";
 import { estimateMonthlyCost } from "../pricing/rateTable.js";
 import { checkSandboxLimits, mergeCapacityPlan } from "./planMerge.js";
-import { buildArchitectureRecommendation, buildEnterpriseOptions } from "./enterpriseRulesEngine.js";
+import {
+  ARCHETYPE_REASONING,
+  archetypeForOrgScale,
+  buildArchitectureRecommendation,
+  buildEnterpriseOptions,
+  classifyOrgScale,
+} from "./enterpriseRulesEngine.js";
 import { BUILD_REGISTRY, BUILD_SENTINEL_PREFIX } from "./buildRegistry.js";
 
 // sizing-workloads is needed on every planner call regardless of request
@@ -509,9 +515,28 @@ export async function runPlanner(
   // PlanRequest (already validated at intake) so it's always correct
   // regardless of what the model did or didn't include.
   if (plan.architecture_recommendation && planRequest.enterprise_context) {
+    // Same reliability gap, one axis over: org_scale/archetype must be a pure
+    // function of team_size (independent of expected_users/criticality — see
+    // compliance-and-dr-reasoning.md's "FLOOR... do not deviate" rule and
+    // enterpriseRulesEngine.ts's own "org_scale and criticality are
+    // independent axes" framing), but a real LLM call proved it will still
+    // infer a larger org_scale from a large *user* count when team_size is
+    // unstated (e.g. "8 million users, team_size unstated" -> incorrectly
+    // "enterprise" instead of the schema-mandated "solo" default) — directly
+    // contradicting the SCHEMA_SHAPE instruction it was given ("solo if
+    // team_size not stated"). Recomputing both the archetype AND its
+    // matching fixed reasoning text deterministically (not just the archetype
+    // enum) keeps the two consistent — leaving the old reasoning prose next
+    // to a corrected archetype would describe the wrong scale.
+    const correctedArchetype = archetypeForOrgScale(classifyOrgScale(planRequest.enterprise_context.team_size));
     plan = {
       ...plan,
-      architecture_recommendation: { ...plan.architecture_recommendation, enterprise_context: planRequest.enterprise_context },
+      architecture_recommendation: {
+        ...plan.architecture_recommendation,
+        enterprise_context: planRequest.enterprise_context,
+        archetype: correctedArchetype,
+        archetype_reasoning: ARCHETYPE_REASONING[correctedArchetype],
+      },
     };
   }
 

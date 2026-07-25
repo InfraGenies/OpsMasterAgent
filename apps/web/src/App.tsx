@@ -36,6 +36,7 @@ export function App() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [deciding, setDeciding] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
   selectedIdRef.current = selectedId;
 
@@ -92,13 +93,16 @@ export function App() {
     comment: string | null,
     patch?: Record<string, unknown>
   ) {
-    if (!selectedId) return;
+    if (!selectedId || deciding) return;
+    setDeciding(true);
     try {
       await api.submitDecision(selectedId, action, comment, "operator (UI)", patch);
       refreshDetail(selectedId);
       refreshRuns();
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeciding(false);
     }
   }
 
@@ -214,6 +218,7 @@ export function App() {
                 key={detail.capacity_plan.recommended_tier}
                 plan={detail.capacity_plan}
                 onDecision={handleDecision}
+                disabled={deciding}
               />
             )}
 
@@ -223,6 +228,7 @@ export function App() {
                 iac={detail.iac_payload}
                 policy={detail.policy_report}
                 onDecision={handleDecision}
+                disabled={deciding}
               />
             )}
 
@@ -231,6 +237,7 @@ export function App() {
                 key={detail.capacity_plan.recommended_tier}
                 plan={detail.capacity_plan}
                 onDecision={handleDecision}
+                disabled={deciding}
               />
             )}
 

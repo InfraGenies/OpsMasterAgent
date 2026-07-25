@@ -9,10 +9,12 @@ export function ApprovalGate({
   iac,
   policy,
   onDecision,
+  disabled,
 }: {
   iac: IaCPayload;
   policy?: PolicyReport | null;
   onDecision: (action: "approve" | "reject", comment: string | null) => void;
+  disabled?: boolean;
 }) {
   const unresolvedBlocking = policy?.findings.filter(
     (f) => f.severity === "critical" || f.severity === "high"
@@ -69,10 +71,10 @@ export function ApprovalGate({
       />
 
       <div className="flex flex-wrap gap-2">
-        <button className="btn-success" onClick={() => onDecision("approve", comment || null)}>
+        <button className="btn-success" disabled={disabled} onClick={() => onDecision("approve", comment || null)}>
           ✓ Approve &amp; Deploy
         </button>
-        <button className="btn-danger" onClick={() => onDecision("reject", comment || null)}>
+        <button className="btn-danger" disabled={disabled} onClick={() => onDecision("reject", comment || null)}>
           ✕ Reject with comment
         </button>
       </div>

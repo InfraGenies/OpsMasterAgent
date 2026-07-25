@@ -8,9 +8,11 @@ import { CapacityPlanView } from "./CapacityPlanView";
 export function PlanApprovalGate({
   plan,
   onDecision,
+  disabled,
 }: {
   plan: CapacityPlan;
   onDecision: (action: "approve_plan" | "reject" | "edit", comment: string | null, patch?: Record<string, unknown>) => void;
+  disabled?: boolean;
 }) {
   const activeOption = plan.options.find((o) => o.tier === plan.recommended_tier) ?? plan.options[0];
   const [comment, setComment] = useState("");
@@ -80,10 +82,10 @@ export function PlanApprovalGate({
             </div>
           ))}
           <div className="flex gap-2 pt-1">
-            <button className="btn-primary btn-sm" onClick={submitEdit}>
+            <button className="btn-primary btn-sm" disabled={disabled} onClick={submitEdit}>
               Update plan with these values
             </button>
-            <button className="btn-ghost btn-sm" onClick={() => setEditing(false)}>
+            <button className="btn-ghost btn-sm" disabled={disabled} onClick={() => setEditing(false)}>
               Cancel
             </button>
           </div>
@@ -99,13 +101,13 @@ export function PlanApprovalGate({
       />
 
       <div className="flex flex-wrap gap-2">
-        <button className="btn-success" onClick={() => onDecision("approve_plan", comment || null)}>
+        <button className="btn-success" disabled={disabled} onClick={() => onDecision("approve_plan", comment || null)}>
           ✓ Approve plan — generate infrastructure code
         </button>
-        <button className="btn-danger" onClick={() => onDecision("reject", comment || null)}>
+        <button className="btn-danger" disabled={disabled} onClick={() => onDecision("reject", comment || null)}>
           ✕ Reject with comment
         </button>
-        <button className="btn-ghost" onClick={() => setEditing((v) => !v)}>
+        <button className="btn-ghost" disabled={disabled} onClick={() => setEditing((v) => !v)}>
           ✎ Edit parameters
         </button>
       </div>
