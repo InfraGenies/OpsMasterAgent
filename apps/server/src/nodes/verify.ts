@@ -5,9 +5,16 @@ import { shouldMockDeploy } from "./dockerProbe.js";
 
 export interface VerifyInput {
   requestId: string;
-  /** e.g. ["http://localhost:3000"] */
-  endpoints: string[];
-  healthPath: string;
+  /**
+   * One entry per app-classified service, each with its own health path
+   * (e.g. [{url:"http://localhost:3000", healthPath:"/api/tags"}]) — was
+   * previously a flat url[] + one global healthPath applied to every
+   * endpoint uniformly, which only worked because every template rendered
+   * exactly one app service. Keep the backend/primary service first when
+   * constructing this (pipeline.ts already does, by service push order) —
+   * the smoke test below only ever probes endpoints[0].
+   */
+  endpoints: { url: string; healthPath: string }[];
   targetRps: number | null;
   onLog: (line: string) => void;
   /**
@@ -94,8 +101,8 @@ export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
   if (input.mockOverride ?? (await shouldMockDeploy())) {
     if (input.forceFail) {
       const checks: CheckResult[] = input.endpoints.map((e) => {
-        input.onLog(`[mock verify] simulated health check GET ${joinUrl(e, input.healthPath)} -> 500 (forced failure marker in request)`);
-        return { name: `GET ${joinUrl(e, input.healthPath)} (SIMULATED)`, status: "fail" as const, latency_ms: 0 };
+        input.onLog(`[mock verify] simulated health check GET ${joinUrl(e.url, e.healthPath)} -> 500 (forced failure marker in request)`);
+        return { name: `GET ${joinUrl(e.url, e.healthPath)} (SIMULATED)`, status: "fail" as const, latency_ms: 0 };
       });
       return {
         request_id: input.requestId,
@@ -103,7 +110,7 @@ export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
         smoke_test: null,
         verdict: "red",
         rolled_back: false,
-        endpoints: input.endpoints,
+        endpoints: input.endpoints.map((e) => e.url),
         summary:
           "SIMULATED verification FAILURE (request carried a deliberate failure marker — UC-8b rollback demo): app container cannot reach the database, health checks red.",
       };
@@ -111,8 +118,8 @@ export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
     // Nothing was really deployed, so probing real endpoints would be
     // meaningless — report clearly-labeled simulated checks instead.
     const checks: CheckResult[] = input.endpoints.map((e) => {
-      input.onLog(`[mock verify] simulated health check GET ${joinUrl(e, input.healthPath)} -> 200`);
-      return { name: `GET ${joinUrl(e, input.healthPath)} (SIMULATED)`, status: "pass" as const, latency_ms: 1 };
+      input.onLog(`[mock verify] simulated health check GET ${joinUrl(e.url, e.healthPath)} -> 200`);
+      return { name: `GET ${joinUrl(e.url, e.healthPath)} (SIMULATED)`, status: "pass" as const, latency_ms: 1 };
     });
     return {
       request_id: input.requestId,
@@ -120,14 +127,14 @@ export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
       smoke_test: null,
       verdict: "green",
       rolled_back: false,
-      endpoints: input.endpoints,
+      endpoints: input.endpoints.map((e) => e.url),
       summary: `SIMULATED verification (mock deploy mode — docker CLI not present): ${checks.length} health check(s) assumed passing; load test skipped.`,
     };
   }
 
   const checks: CheckResult[] = [];
   for (const endpoint of input.endpoints) {
-    checks.push(await checkHealth(joinUrl(endpoint, input.healthPath), input.onLog));
+    checks.push(await checkHealth(joinUrl(endpoint.url, endpoint.healthPath), input.onLog));
   }
 
   const allChecksPass = checks.length > 0 && checks.every((c) => c.status === "pass");
@@ -137,7 +144,7 @@ export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
   if (env.SKIP_LOAD_TEST) {
     input.onLog("load test skipped (SKIP_LOAD_TEST=true) — verdict based on health checks only");
   } else if (allChecksPass && input.endpoints.length > 0 && input.targetRps) {
-    smokeTest = await runSmokeTest(joinUrl(input.endpoints[0], input.healthPath), input.targetRps, input.onLog);
+    smokeTest = await runSmokeTest(joinUrl(input.endpoints[0].url, input.endpoints[0].healthPath), input.targetRps, input.onLog);
     smokeOk = smokeTest.p95_ms < 300 && smokeTest.error_rate < 0.01;
   }
 
@@ -162,7 +169,7 @@ export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
     smoke_test: smokeTest,
     verdict,
     rolled_back: false,
-    endpoints: input.endpoints,
+    endpoints: input.endpoints.map((e) => e.url),
     summary,
   };
 }

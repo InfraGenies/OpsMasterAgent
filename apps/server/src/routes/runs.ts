@@ -1,3 +1,4 @@
+import JSZip from "jszip";
 import { Router } from "express";
 import { DecisionActionSchema } from "@ops-master/shared";
 import type {
@@ -66,6 +67,35 @@ runsRouter.get("/:id", async (req, res, next) => {
       verify_report: verifyReport,
       decision,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** projectNameFor-shaped sanitization for a filename, not a project name — kept local since it's only used for the zip's own download name. */
+function sanitizeFilenameSegment(s: string): string {
+  return s.replace(/[^a-z0-9._-]+/gi, "-");
+}
+
+runsRouter.get("/:id/iac/download", async (req, res, next) => {
+  try {
+    const store = getStore();
+    const run = await store.getRun(req.params.id);
+    if (!run) throw new HttpError(404, "run not found");
+
+    const iacPayload = await loadLatestNodeOutput<IaCPayload>(store, run.request_id, "iac_generator");
+    if (!iacPayload || iacPayload.files.length === 0) {
+      throw new HttpError(404, "no IaC files generated yet for this run");
+    }
+
+    const zip = new JSZip();
+    for (const file of iacPayload.files) zip.file(file.path, file.content);
+    const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+
+    const filename = `${sanitizeFilenameSegment(run.request_id)}-iac.zip`;
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(buffer);
   } catch (err) {
     next(err);
   }

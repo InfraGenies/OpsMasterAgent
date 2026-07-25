@@ -6,6 +6,7 @@ import type { CapacityPlanOption, EnvironmentRecord, ReadinessCheckResult, Readi
 import { env } from "../config.js";
 import { projectNameFor } from "../orchestrator/ids.js";
 import { appServices } from "../templates/types.js";
+import { isBuildSentinel } from "./buildRegistry.js";
 import { isDockerAvailable } from "./dockerProbe.js";
 
 const execFileAsync = promisify(execFile);
@@ -204,20 +205,28 @@ async function checkDiskSpace(): Promise<ReadinessCheckResult> {
   }
 }
 
+/** True iff the plan's app services are exactly the RealWorld build-sentinel pair (nodes/buildRegistry.ts) — the one known, vetted 2-app-service topology (compose-realworld-fullstack-v1). Every other multi-app-service shape stays unsupported below. */
+function isRealworldFullstackPlan(plan: CapacityPlanOption): boolean {
+  const keys = new Set(plan.services.map((s) => isBuildSentinel(s.image)).filter((k): k is string => k !== null));
+  return keys.has("realworld-node-express") && keys.has("realworld-react-frontend");
+}
+
 function checkTemplateTopology(plan: CapacityPlanOption): ReadinessCheckResult {
   const appCount = appServices(plan).length;
-  if (appCount !== 1) {
+  if (appCount === 1 || isRealworldFullstackPlan(plan)) {
     return {
       name: "template_topology_supported",
-      status: "fail",
-      detail: `${appCount} app service(s) planned — the template catalogue only covers single-app-service topologies today`,
+      status: "pass",
+      detail: isRealworldFullstackPlan(plan)
+        ? "topology matches the known RealWorld fullstack pair (compose-realworld-fullstack-v1)"
+        : "topology matches a known template shape",
       blocking: true,
     };
   }
   return {
     name: "template_topology_supported",
-    status: "pass",
-    detail: "topology matches a known template shape",
+    status: "fail",
+    detail: `${appCount} app service(s) planned — the template catalogue only covers single-app-service topologies (and the RealWorld fullstack pair) today`,
     blocking: true,
   };
 }

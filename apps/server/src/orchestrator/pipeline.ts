@@ -370,6 +370,7 @@ async function reachApprovalGate(
       feedback,
       demoWeakSecret,
       enterpriseArchetype: fullPlan.architecture_recommendation?.archetype ?? null,
+      architectureRecommendation: fullPlan.architecture_recommendation ?? null,
     });
 
     if (!iacResult.ok) {
@@ -777,17 +778,27 @@ async function runDeployThroughReport(requestId: string): Promise<void> {
   // nothing is actually listening on. Confirmed via a real UC-1 run: deploy
   // succeeded (container reported healthy) but verify checked the LLM's
   // stray "lb" port instead of the one nginx was actually published on.
-  const appSvc = appServices(plan)[0];
-  const endpoints =
-    payload.format === "compose" && appSvc
-      ? [`http://localhost:${hostPortFor(plan, appSvc.name, appSvc.ports[0] ?? 3000)}`]
-      : plan.network.expose.map((e) => `http://localhost:${e.host_port}`);
+  // Was appServices(plan)[0] — now maps every app-classified service (the
+  // RealWorld fullstack pair puts 2 here: backend + frontend), each paired
+  // with its own health path from payload.health_path (keyed by service
+  // name). appServices() ordering already puts the backend/primary service
+  // first (mockPlanner/sizing-workloads.md push it before any paired
+  // frontend), which is why runVerify's smoke test (only ever probes
+  // endpoints[0]) still load-tests the real API, not a static frontend.
+  const appSvcs = appServices(plan);
+  const endpointPairs =
+    payload.format === "compose" && appSvcs.length > 0
+      ? appSvcs.map((svc) => ({
+          url: `http://localhost:${hostPortFor(plan, svc.name, svc.ports[0] ?? 3000)}`,
+          healthPath: payload.health_path[svc.name] ?? "/",
+        }))
+      : plan.network.expose.map((e) => ({ url: `http://localhost:${e.host_port}`, healthPath: "/" }));
+  const endpoints = endpointPairs.map((p) => p.url);
 
   broadcastEvent("node_started", requestId, "verify");
   const verifyReport = await runVerify({
     requestId,
-    endpoints,
-    healthPath: payload.health_path,
+    endpoints: endpointPairs,
     targetRps: planRequest.expected_load.rps,
     onLog: (line) => broadcastEvent("log_line", requestId, "verify", line),
     forceFail: /\b(demo-fail|wrong (db )?password)\b/i.test(planRequest.raw_text),

@@ -9,9 +9,14 @@ function escapeRegex(s: string): string {
 function buildRegistryRules(): { re: RegExp; argv: (m: RegExpMatchArray) => string[] }[] {
   const rules: { re: RegExp; argv: (m: RegExpMatchArray) => string[] }[] = [];
   for (const entry of Object.values(BUILD_REGISTRY)) {
+    // Destination dir is "repo-<registry key>", not a bare "repo" — lets a
+    // single build clone more than one repo (e.g. the RealWorld backend +
+    // frontend pair) without the second clone colliding with the first.
+    // Still 100% derived from this closed table, never attacker/LLM input.
+    const cloneDir = `repo-${entry.key}`;
     rules.push({
-      re: new RegExp(`^git clone ${escapeRegex(entry.repoUrl)} repo$`),
-      argv: () => ["clone", entry.repoUrl, "repo"],
+      re: new RegExp(`^git clone ${escapeRegex(entry.repoUrl)} ${escapeRegex(cloneDir)}$`),
+      argv: () => ["clone", entry.repoUrl, cloneDir],
     });
     rules.push({
       re: new RegExp(`^git checkout ${escapeRegex(entry.commitSha)}$`),

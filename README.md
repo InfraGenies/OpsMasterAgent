@@ -184,7 +184,8 @@ expects, so no allow-list change was needed.
 
 A sixth addition: a **`build` node** (`apps/server/src/nodes/build.ts`, run from
 `orchestrator/pipeline.ts: runDeployThroughReport` between Gate 2 approval and `deploy`) that clones and
-builds a real application from source for UC-1's flagship request, instead of the placeholder runtime
+builds a real application from source for UC-1's flagship request (and, since then, the default fallback
+for *any* generic Node.js request with no repo/app named — see below), instead of the placeholder runtime
 image every other compose template uses (`node:18-alpine` with no app code — deployable, but not the
 credible reference API UC-1 is meant to demonstrate). Security follows the same discipline as
 `commandAllowList.ts`'s existing hard allow-list: the planner can only ever emit a `"__BUILD__:<key>"`
@@ -200,9 +201,22 @@ own platform auto-detection is unreliable on this Alpine base and has to be forc
 `binaryTargets` patch; and the *client's* runtime engine selection is separately broken the same way,
 requiring `PRISMA_QUERY_ENGINE_LIBRARY` to bypass auto-detection entirely at the container level. Confirmed
 by manually running the built image standalone until `/api/tags` returned `{"tags":[]}`, then via a full
-live pipeline run reaching `deployed` with a green `verify` report. This only ever runs for the one
-registered sentinel; every other use case's `IaCPayload.build_steps` stays `null`, and behavior for them is
-unchanged.
+live pipeline run reaching `deployed` with a green `verify` report. Every other use case's `IaCPayload.build_steps` stays `null`, and behavior for them is unchanged.
+
+**Update:** `buildRegistry.ts` now has a second entry, `realworld-react-frontend` (paired with the backend
+above via a `pairedWith` field), so `docker/welcome-to-docker` is no longer the default for a generic
+Node.js request with no repo/app named — it's reserved for non-Node runtimes now. `iacGenerator.ts` loops
+over every build-sentinel service in a plan (not just the first) and renders both through a new
+`compose-realworld-fullstack-v1` template (`templates/catalog.ts`), giving a real, browser-rendered login
+page instead of a placeholder. The frontend is `react-scripts@1.1.1` (2018-era CRA) with no env-var
+mechanism for its API base URL — `iac_generator` `sed`-patches a placeholder token in `src/agent.js` to the
+real, resolved backend host-port URL at plan-render time. Confirmed by building the frontend in isolation
+first: `node:16-alpine` (not `node:lts-alpine`) ships pre-OpenSSL-3 and needed zero extra flags to build
+cleanly, and the pinned backend commit's `app.use(cors())` (no origin restriction) needed no changes for
+the cross-port browser calls to work. `IaCPayload.dockerfile_override`/`health_path` both changed from a
+single scalar to a map (keyed by clone-dir and service name respectively) to support two build-sentinel
+services in one plan; `pipeline.ts`/`verify.ts` similarly changed from a single endpoint+health-path to one
+pair per app-classified service.
 
 ## Where each spec agent lives in code
 

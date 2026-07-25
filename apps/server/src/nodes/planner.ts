@@ -260,38 +260,60 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
   // generic runtime image (mirrors the prompt's "prefer a purpose-built image").
   let appPort = 3000;
   let appVolume = false;
+  // Merged UC-1 + UC-2 default: any Node.js request with no repo/build given
+  // and no deliberate-failure marker now gets the real RealWorld Conduit
+  // pair (backend + a browser-rendered frontend with a real login page)
+  // instead of a placeholder — whether or not the request happened to
+  // mention postgresql/a specific app. This is now the flagship demo AND the
+  // generic warm-up path; "postgresql" is forced into effect below via
+  // effectiveDependencies even when unstated, since the flagship app needs
+  // it. Set once here and consumed further down when building services.
+  let isRealworldFullstackDefault = false;
+  let frontendEntry: (typeof BUILD_REGISTRY)[string] | null = null;
   if (/\b(monitoring|uptime|status page|dashboard)\b/.test(rawLower) && !planRequest.repo_url) {
     image = "louislam/uptime-kuma:1";
     appPort = 3001;
     appVolume = true;
     runtimeNote = "Uptime Kuma monitoring dashboard (single instance)";
-  } else if (/\btodo\b/.test(rawLower) && !planRequest.repo_url) {
-    // UC-2 warm-up path: generic demo request with no repo/build given, so
-    // there's no real app code to run — a bare runtime base image (node:*)
+  } else if (
+    planRequest.runtime === "nodejs18" &&
+    !planRequest.repo_url &&
+    !/\b(demo-fail|wrong (db )?password)\b/i.test(rawLower)
+  ) {
+    // Same "no real app code" problem UC-1/UC-2 both hit, but this scenario
+    // is meant to prove capacity planning against a credible, fully real
+    // app (backend + login page), not a placeholder — emit both build
+    // sentinels (nodes/buildRegistry.ts) so iac_generator clones and builds
+    // the real pair instead of picking an off-the-shelf substitute. The
+    // demo-fail/wrong-password guard keeps UC-8b's fast offline rollback
+    // demo from being silently rerouted into a multi-minute real build.
+    const realworldEntry = BUILD_REGISTRY["realworld-node-express"];
+    frontendEntry = BUILD_REGISTRY["realworld-react-frontend"];
+    isRealworldFullstackDefault = true;
+    image = BUILD_SENTINEL_PREFIX + "realworld-node-express";
+    appPort = realworldEntry.containerPort;
+    runtimeNote = `${realworldEntry.displayName} + ${frontendEntry.displayName} (built from source, no repo/build given so the known flagship reference pair is used)`;
+  } else if (planRequest.runtime !== "nodejs18" && !planRequest.repo_url) {
+    // Generic demo request with no repo/build given, non-Node runtime — the
+    // RealWorld pair above is Node-specific, so this remains the fallback
+    // for python/java/static/multi requests with no real app code to run: a
+    // bare language runtime base image (python:*, eclipse-temurin:*, etc.)
     // has no server process and will always fail its health check. Use a
     // well-known image that actually serves HTTP out of the box instead
     // (sizing-workloads.md skill rule).
     image = "docker/welcome-to-docker";
     appPort = 80;
-    runtimeNote = "Demo todo app warm-up (no repo/build given) — docker/welcome-to-docker serves real HTTP traffic";
-  } else if (
-    planRequest.runtime === "nodejs18" &&
-    planRequest.dependencies.includes("postgresql") &&
-    !planRequest.repo_url &&
-    !/\b(demo-fail|wrong (db )?password)\b/i.test(rawLower)
-  ) {
-    // UC-1 flagship path: same "no real app code" problem as UC-2, but this
-    // scenario is supposed to prove capacity planning against a credible
-    // reference API, not a placeholder — emit the build sentinel
-    // (nodes/buildRegistry.ts) so iac_generator clones and builds the real
-    // app instead of picking another off-the-shelf substitute. The
-    // demo-fail/wrong-password guard keeps UC-8b's fast offline rollback
-    // demo from being silently rerouted into a multi-minute real build.
-    const realworldEntry = BUILD_REGISTRY["realworld-node-express"];
-    image = BUILD_SENTINEL_PREFIX + "realworld-node-express";
-    appPort = realworldEntry.containerPort;
-    runtimeNote = `${realworldEntry.displayName} (built from source, no repo/build given so the known flagship reference is used)`;
+    runtimeNote = "Demo warm-up for a non-Node runtime with no repo/build given — docker/welcome-to-docker serves real HTTP traffic";
   }
+
+  // Forces postgresql into effect for the RealWorld fullstack default even
+  // when the request never mentioned a database — the flagship pair needs
+  // it — without mutating the audited PlanRequest itself. Every downstream
+  // db/cache check in buildOption reads this instead of
+  // planRequest.dependencies directly.
+  const effectiveDependencies = isRealworldFullstackDefault
+    ? [...new Set([...planRequest.dependencies, "postgresql" as const])]
+    : planRequest.dependencies;
 
   // UC-4: an explicit replica count in the request is an instruction, not a
   // sizing input — it overrides load-based sizing for every tier equally.
@@ -313,8 +335,8 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
   );
 
   const isProd = environmentLower.includes("prod");
-  const hasDb = planRequest.dependencies.includes("postgresql") || planRequest.dependencies.includes("mysql");
-  const hasRedis = planRequest.dependencies.includes("redis");
+  const hasDb = effectiveDependencies.includes("postgresql") || effectiveDependencies.includes("mysql");
+  const hasRedis = effectiveDependencies.includes("redis");
 
   function buildOption(cfg: TierConfig): CapacityPlanOption {
     let replicas = explicitReplicas ?? Math.min(4, ceilReplicas(rps, perInstance, cfg.headroomPct, cfg.replicaFloor) + cfg.extraReplica);
@@ -363,7 +385,7 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
 
     let availabilityNotes = replicas > 1 ? `${replicas}x app replicas` : `${replicas}x app replica(s)`;
 
-    if (planRequest.dependencies.includes("postgresql")) {
+    if (effectiveDependencies.includes("postgresql")) {
       services.push({ name: "db", image: "postgres:16-alpine", cpu: "1.0", memory: "1Gi", replicas: 1, ports: [5432] });
       storage.push({ name: "dbdata", type: "volume", size: "1Gi", attached_to: "db" });
       internal.push("db");
@@ -378,7 +400,7 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
         expose.push({ service: "db", host_port: 5432 });
         reasons.push("Postgres port published to the host so the build pipeline's migration step can reach it directly.");
       }
-    } else if (planRequest.dependencies.includes("mysql")) {
+    } else if (effectiveDependencies.includes("mysql")) {
       services.push({ name: "db", image: "mysql:8", cpu: "1.0", memory: "1Gi", replicas: 1, ports: [3306] });
       storage.push({ name: "dbdata", type: "volume", size: "1Gi", attached_to: "db" });
       internal.push("db");
@@ -388,12 +410,22 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
       availabilityNotes += cfg.tier === "economy" ? ", single-instance DB (no failover)" : ", single-instance DB (sandbox can't replicate stateful services — would be Multi-AZ on a real cloud target)";
     }
 
-    if (planRequest.dependencies.includes("redis")) {
+    if (effectiveDependencies.includes("redis")) {
       services.push({ name: "cache", image: "redis:7-alpine", cpu: "0.5", memory: "256Mi", replicas: 1, ports: [6379] });
       internal.push("cache");
       reasons.push("Redis sized at 1 instance / 256Mi, no volume (no persistence requested).");
     }
     if (hasRedis) availabilityNotes += ", single-instance cache";
+
+    if (isRealworldFullstackDefault && frontendEntry) {
+      // Browser-rendered login page, paired with the "app" backend above —
+      // needs its own host-published port since a real browser must reach
+      // it directly (unlike the db-in-build-sentinel-case exposure above,
+      // which exists only for the host-side migration step).
+      services.push({ name: "web", image: BUILD_SENTINEL_PREFIX + "realworld-react-frontend", cpu: "0.25", memory: "128Mi", replicas: 1, ports: [frontendEntry.containerPort] });
+      expose.push({ service: "web", host_port: frontendEntry.containerPort });
+      reasons.push(`${frontendEntry.displayName} added as the browser-facing frontend, calling the backend above over its published host port.`);
+    }
 
     if (replicas > 1) {
       reasons.push("Nginx load balancer added automatically because replicas > 1 for an HTTP service.");

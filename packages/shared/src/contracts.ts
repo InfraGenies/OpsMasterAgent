@@ -265,8 +265,12 @@ export const TemplateIdSchema = z.enum([
   "compose-web-db-v1",
   "compose-web-db-cache-v1",
   "compose-lb-replicas-v1",
+  /** Fixed worked example pairing the two realworld-* build-sentinel entries (buildRegistry.ts) — postgres + backend API + browser-rendered frontend. Backend-forced when both sentinels are present in the plan, never picked by the LLM's own judgement (see iacGenerator.ts). */
+  "compose-realworld-fullstack-v1",
   "tf-ecs-fargate-v1",
   "tf-eks-v1",
+  /** Enterprise Architecture Advisor, Phase 2 (templates/enterpriseCatalog.ts) — solo_ecs_fargate/team_ecs_fargate_ha only. Backend-forced whenever CapacityPlan.architecture_recommendation.archetype is one of those two, never LLM-picked. Distinct from "tf-ecs-fargate-v1" (UC-9's unrelated retail-store-sample-app module) so the audit trail unambiguously shows which renderer actually produced a given plan's Terraform. */
+  "tf-enterprise-ecs-fargate-v1",
   /** Not a catalog entry — the iac_generator wrote these files directly because nothing in the catalog covered the topology. See skills/novel-requirement-reasoning.md. */
   "freeform",
 ]);
@@ -302,7 +306,18 @@ export const IaCPayloadSchema = z.object({
     .array(
       z.object({
         command: z.string(),
-        cwd: z.enum(["deployment", "repo"]),
+        /**
+         * "deployment" is the shared deploy dir; any other value is a
+         * per-build-sentinel clone directory of the shape "repo-<registry
+         * key>" (nodes/buildRegistry.ts), one per resolved sentinel service
+         * so cloning more than one repo in the same build doesn't collide.
+         * The regex only constrains shape — `cwd` is produced exclusively by
+         * iac_generator (never the LLM/user), and build.ts/commandAllowList.ts
+         * both independently verify it resolves to an actual BUILD_REGISTRY
+         * key before using it as a directory name, rather than trusting the
+         * schema shape alone.
+         */
+        cwd: z.union([z.literal("deployment"), z.string().regex(/^repo-[a-z0-9][a-z0-9_-]*$/)]),
         env: z.record(z.string(), z.string()).optional(),
       })
     )
@@ -310,10 +325,27 @@ export const IaCPayloadSchema = z.object({
     .default(null),
   /** service name -> locally-built image tag, populated only on the build-sentinel path so environment snapshots reflect what's actually running, not the __BUILD__:... sentinel string. */
   resolved_images: z.record(z.string(), z.string()).nullable().default(null),
-  /** Full Dockerfile content to write into the cloned repo before the `docker build` step, replacing the repo's own — only set when BuildRegistryEntry.dockerfileOverride is non-null (nodes/buildRegistry.ts). */
-  dockerfile_override: z.string().nullable().default(null),
-  /** HTTP path verify checks against — was previously hardcoded to "/" in pipeline.ts regardless of what the template actually serves; now threaded through from variables.health_path for every template. */
-  health_path: z.string().default("/"),
+  /**
+   * Full Dockerfile content to write before the corresponding `docker build`
+   * step, replacing the repo's own — only set when a service resolves to a
+   * BuildRegistryEntry with a non-null dockerfileOverride. Keyed by the
+   * build step's own `cwd` (its clone dir), NOT by service name — build.ts
+   * only ever knows `cwd`, never a CapacityPlan service name, and a single
+   * build can now involve more than one cloned repo (nodes/buildRegistry.ts's
+   * `pairedWith` mechanism). Deliberately keyed differently from
+   * `health_path` below (service-name-keyed) — two different consumers, two
+   * different natural keys; don't "fix" this into false consistency.
+   */
+  dockerfile_override: z.record(z.string(), z.string()).nullable().default(null),
+  /**
+   * HTTP path verify checks against, keyed by CapacityPlan service name — was
+   * previously a single scalar applied to every endpoint uniformly, which
+   * only worked because every template rendered exactly one app service.
+   * Every non-fullstack template still populates exactly one entry; only
+   * compose-realworld-fullstack-v1 populates two (backend `/api/tags`,
+   * frontend `/`).
+   */
+  health_path: z.record(z.string(), z.string()).default({}),
 });
 export type IaCPayload = z.infer<typeof IaCPayloadSchema>;
 

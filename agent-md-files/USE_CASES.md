@@ -21,16 +21,21 @@ Recommended demo order for judges: **UC-2 → UC-1 → UC-7 → UC-8** (simple �
 
 ---
 
-## UC-2 — SIMPLE: Single-container dev environment (warm-up / smoke path)
+## UC-2 — SIMPLE: RealWorld fullstack dev environment (warm-up / smoke path)
 
 | | |
 |---|---|
-| **Repo** | https://github.com/docker/getting-started-app |
-| **Stack** | Node.js todo app (official Docker sample, no external DB) |
+| **Repo** | https://github.com/gothinkster/node-express-realworld-example-app + https://github.com/gothinkster/react-redux-realworld-example-app (paired backend + frontend, same "Conduit" build-sentinel pair as UC-1) |
+| **Stack** | Node.js + Express + Prisma + PostgreSQL backend, React/Redux/CRA frontend served by nginx (real browser-rendered login page) |
 | **NL request** | *"Spin up a dev environment for a simple Node.js todo app, low traffic, single instance."* |
-| **Deploy target** | docker-compose (1 service) |
-| **What it proves** | Fastest happy path (~45s). Use this to open the demo and to sanity-test the pipeline every morning |
-| **Verify** | `GET /` returns 200, k6: 20 rps for 15s |
+| **Deploy target** | docker-compose (postgres + backend + frontend, 3 services) |
+| **What it proves** | Any generic "no repo, no named app" Node.js request gets a genuinely real, running fullstack app instead of a throwaway placeholder — not just a health-check-passing container |
+| **Verify** | Backend `GET /api/tags` health; frontend `GET /` health (real Conduit login page, not a docker onboarding page) |
+
+**Note:** this scenario used to deploy `docker/getting-started-app` (a single throwaway placeholder
+container) as a fast warm-up path. It now reuses UC-1's exact build-sentinel pair by default for any
+generic Node.js request with no repo/app named — no separate "simple" topology exists anymore, but the
+NL request and demo purpose (fastest sanity-check path) are unchanged.
 
 ---
 

@@ -301,18 +301,107 @@ const composeLbReplicasV1: TemplateDefinition = {
   },
 };
 
+/**
+ * Fixed worked example pairing the two realworld-* build-sentinel entries
+ * (nodes/buildRegistry.ts) — postgres + the Node/Express/Prisma backend +
+ * a browser-rendered React frontend. Unlike every other template here, this
+ * one is never picked by the LLM's own judgement — iac_generator forces this
+ * template_id whenever both sentinels are present in the plan (see
+ * iacGenerator.ts) — so it's allowed to assume a fixed "app"/"web" service
+ * naming and 2-app-service shape that appServices(plan)[0] alone can't
+ * express, rather than trying to generalize appServices() itself.
+ */
+const composeRealworldFullstackV1: TemplateDefinition = {
+  id: "compose-realworld-fullstack-v1",
+  format: "compose",
+  description:
+    "RealWorld/Conduit fullstack worked example: postgres + Node/Express/Prisma backend (build-sentinel " +
+    "realworld-node-express, service name \"app\") + React/CRA frontend served by nginx (build-sentinel " +
+    "realworld-react-frontend, service name \"web\") — use ONLY when plan.services contains both of those " +
+    "two exact build sentinels alongside a db service; never pick this for any other topology (backend " +
+    "forces this template_id itself when both sentinels are present, so the LLM does not need to choose it).",
+  render(plan, variables, ctx): RenderResult {
+    const backend = plan.services.find((s) => s.name === "app");
+    const frontend = plan.services.find((s) => s.name === "web");
+    const db = dbService(plan);
+    if (!backend || !frontend || !db) {
+      throw new Error(
+        'compose-realworld-fullstack-v1: plan must include an "app" (backend) service, a "web" (frontend) service, and a db service'
+      );
+    }
+
+    const backendContainerPort = backend.ports[0] ?? 3000;
+    const backendHostPort = hostPortFor(plan, backend.name, backendContainerPort);
+    const frontendContainerPort = frontend.ports[0] ?? 80;
+    const frontendHostPort = hostPortFor(plan, frontend.name, frontendContainerPort);
+
+    const dbName = typeof variables.db_name === "string" ? variables.db_name : "appdb";
+    const dbUser = typeof variables.db_user === "string" ? variables.db_user : "appuser";
+    const dbPassword = typeof variables.db_password === "string" ? variables.db_password : generateSecret();
+    const dbPort = db.ports[0] ?? 5432;
+    const dbExpose = plan.network.expose.find((e) => e.service === db.name);
+    const storageName = plan.storage[0]?.name ?? "dbdata";
+    const databaseUrl = `postgres://${dbUser}:${dbPassword}@${db.name}:${dbPort}/${dbName}`;
+
+    const doc: ComposeDoc = {
+      services: {
+        [db.name]: {
+          image: db.image,
+          ports: dbExpose ? [`${dbExpose.host_port}:${dbPort}`] : undefined,
+          restart: "unless-stopped",
+          environment: { POSTGRES_DB: dbName, POSTGRES_USER: dbUser, POSTGRES_PASSWORD: dbPassword },
+          volumes: [`${storageName}:/var/lib/postgresql/data`],
+          healthcheck: pgHealthcheck(dbUser),
+          deploy: { resources: { limits: { cpus: db.cpu, memory: db.memory } } },
+        },
+        [backend.name]: {
+          image: backend.image, // already resolved to the local -app:<hex> tag by iacGenerator.ts
+          ports: [`${backendHostPort}:${backendContainerPort}`],
+          restart: "unless-stopped",
+          environment: { DATABASE_URL: databaseUrl },
+          depends_on: { [db.name]: { condition: "service_healthy" } },
+          healthcheck: httpHealthcheck(backendContainerPort, "/api/tags"),
+          deploy: { resources: { limits: { cpus: backend.cpu, memory: backend.memory } } },
+        },
+        [frontend.name]: {
+          image: frontend.image, // already resolved to its own local -app:<hex> tag by iacGenerator.ts
+          ports: [`${frontendHostPort}:${frontendContainerPort}`],
+          restart: "unless-stopped",
+          // No depends_on the backend: the frontend's API base URL is already burned into its static
+          // JS bundle at BUILD time (buildRegistry.ts) — it doesn't need the backend up to start
+          // serving, only to successfully answer the browser's own fetches once a user loads it.
+          healthcheck: httpHealthcheck(frontendContainerPort, "/"),
+          deploy: { resources: { limits: { cpus: frontend.cpu, memory: frontend.memory } } },
+        },
+      },
+      volumes: { [storageName]: null },
+    };
+
+    return {
+      files: [{ path: "docker-compose.yml", content: dumpCompose(doc) }],
+      applyCommand: `docker compose -p ${ctx.projectName} up -d --wait`,
+      rollbackCommand: `docker compose -p ${ctx.projectName} down -v`,
+    };
+  },
+};
+
 // "freeform" is a sentinel template_id for LLM-written files (skills/novel-requirement-reasoning.md),
-// not a real catalog entry — excluded here so TEMPLATES stays exactly the rendered-template catalogue.
-export const TEMPLATES: Record<Exclude<TemplateId, "freeform">, TemplateDefinition> = {
+// not a real catalog entry. "tf-enterprise-ecs-fargate-v1" is rendered directly by
+// templates/enterpriseCatalog.ts (Enterprise Architecture Advisor, Phase 2) — iacGenerator.ts
+// bypasses this catalogue entirely for it, so it's never LLM-choosable and never appears in
+// templateCatalogSummary()'s output. Both excluded here so TEMPLATES stays exactly the
+// generic-engine's own rendered-template catalogue.
+export const TEMPLATES: Record<Exclude<TemplateId, "freeform" | "tf-enterprise-ecs-fargate-v1">, TemplateDefinition> = {
   "compose-single-v1": composeSingleV1,
   "compose-web-db-v1": composeWebDbV1,
   "compose-web-db-cache-v1": composeWebDbCacheV1,
   "compose-lb-replicas-v1": composeLbReplicasV1,
+  "compose-realworld-fullstack-v1": composeRealworldFullstackV1,
   ...TERRAFORM_TEMPLATES,
 };
 
 export function renderTemplate(
-  templateId: Exclude<TemplateId, "freeform">,
+  templateId: Exclude<TemplateId, "freeform" | "tf-enterprise-ecs-fargate-v1">,
   plan: Parameters<TemplateDefinition["render"]>[0],
   variables: Record<string, unknown>,
   ctx: RenderContext

@@ -18,6 +18,16 @@ export interface BuildRegistryEntry {
   containerPort: number;
   healthPath: string;
   /**
+   * Registry key of the entry this one is meant to be deployed alongside
+   * (e.g. a frontend paired with its backend API), or null for a
+   * standalone entry. Kept here rather than having the planner independently
+   * emit both sentinels together, so the pairing lives in the one file
+   * that's already the source of truth for these repos and can't silently
+   * drift. iac_generator looks up BUILD_REGISTRY[entry.pairedWith] to learn
+   * the paired service's resolved host port (see iacGenerator.ts).
+   */
+  pairedWith: string | null;
+  /**
    * The repo's own Dockerfile only `npm --omit=dev install`s inside the
    * container, so @prisma/client's postinstall generate step has neither
    * the `prisma` CLI (a devDependency, stripped by --omit=dev) nor the
@@ -72,6 +82,16 @@ export interface BuildRegistryEntry {
 
 export const BUILD_SENTINEL_PREFIX = "__BUILD__:";
 
+/**
+ * Placeholder token baked into the frontend's compiled JS bundle at build
+ * time (see "realworld-react-frontend"'s dockerfileOverride below) —
+ * iacGenerator.ts substitutes this for the real
+ * `http://localhost:<backend host port>/api` URL once the backend's host
+ * port is known, entirely at plan-render time (before either image is
+ * actually built).
+ */
+export const FRONTEND_API_ROOT_PLACEHOLDER = "__OPS_MASTER_API_ROOT_PLACEHOLDER__";
+
 export const BUILD_REGISTRY: Record<string, BuildRegistryEntry> = {
   "realworld-node-express": {
     key: "realworld-node-express",
@@ -82,6 +102,7 @@ export const BUILD_REGISTRY: Record<string, BuildRegistryEntry> = {
     commitSha: "30b68e1e881462b2f4164ea09ab4c4f5699c7b0b",
     containerPort: 3000,
     healthPath: "/api/tags",
+    pairedWith: null,
     dockerfileOverride: [
       "FROM node:lts-alpine",
       "WORKDIR /app",
@@ -105,6 +126,45 @@ export const BUILD_REGISTRY: Record<string, BuildRegistryEntry> = {
       // dockerfileOverride doc comment above (point 3).
       "ENV PRISMA_QUERY_ENGINE_LIBRARY=/app/api/node_modules/.prisma/client/libquery_engine-linux-musl-openssl-3.0.x.so.node",
       'CMD [ "node", "api" ]',
+      "",
+    ].join("\n"),
+  },
+  "realworld-react-frontend": {
+    key: "realworld-react-frontend",
+    displayName: "RealWorld React/Redux/CRA reference frontend (Conduit)",
+    repoUrl: "https://github.com/gothinkster/react-redux-realworld-example-app.git",
+    // Verified via `git ls-remote` on 2026-07-25 (matches HEAD/master) — re-verify before relying on
+    // this if executed much later, same discipline as the backend entry above.
+    commitSha: "ee72eba4056392c95a27bc48d385d3f54ba38a18",
+    containerPort: 80,
+    healthPath: "/",
+    pairedWith: "realworld-node-express",
+    dockerfileOverride: [
+      // node:16-alpine, not node:lts-alpine: this repo is react-scripts@1.1.1
+      // (2018-era webpack 2/3). Confirmed by actually building it: node:16
+      // ships OpenSSL 1.1.1 (pre-3.0), so the classic
+      // "error:0308010C:digital envelope routines::unsupported" crash a newer
+      // Node would hit here never happens — no --openssl-legacy-provider
+      // flag needed at all on this base image.
+      "FROM node:16-alpine AS build",
+      "WORKDIR /app",
+      "COPY package.json ./",
+      // No package-lock.json in this repo (confirmed) — npm ci isn't an
+      // option, only npm install.
+      "RUN npm install",
+      "COPY . .",
+      // src/agent.js hardcodes its API base URL as a plain string literal —
+      // no env-var mechanism exists (upstream issue #107, never implemented,
+      // repo archived 2021-09-08 read-only) — so patch it directly, same
+      // sed-before-build pattern as the backend entry above. iacGenerator.ts
+      // replaces this placeholder with the real, resolved backend host-port
+      // URL before writing this Dockerfile out (see FRONTEND_API_ROOT_PLACEHOLDER).
+      `RUN sed -i "s#https://conduit.productionready.io/api#${FRONTEND_API_ROOT_PLACEHOLDER}#" src/agent.js`,
+      "RUN npm run build",
+      "",
+      "FROM nginx:alpine",
+      "COPY --from=build /app/build /usr/share/nginx/html",
+      "EXPOSE 80",
       "",
     ].join("\n"),
   },

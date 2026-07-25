@@ -1,8 +1,16 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { IaCPayload } from "@ops-master/shared";
+import { BUILD_REGISTRY } from "./buildRegistry.js";
 import { resolveAllowedCommand, runAllowedCommand } from "./commandAllowList.js";
 import { shouldMockBuild } from "./dockerProbe.js";
+
+/** True iff `cwd` is "deployment" or a "repo-<key>" clone dir for a key that actually exists in BUILD_REGISTRY. iac_generator is the only producer of this field (never the LLM/user), but this is checked again here rather than trusting the schema's regex shape alone — see contracts.ts's cwd doc comment. */
+function isKnownCwd(cwd: string): boolean {
+  if (cwd === "deployment") return true;
+  const match = /^repo-(.+)$/.exec(cwd);
+  return match !== null && match[1] in BUILD_REGISTRY;
+}
 
 export interface BuildInput {
   payload: IaCPayload;
@@ -65,15 +73,29 @@ export async function runBuild(input: BuildInput): Promise<BuildOutcome> {
     const isWinNpm = process.platform === "win32" && (rawBin === "npm" || rawBin === "npx");
     const bin = isWinNpm ? "cmd.exe" : rawBin;
     const finalArgv = isWinNpm ? ["/c", rawBin, ...argv] : argv;
-    const cwd = step.cwd === "repo" ? path.join(input.deploymentDir, "repo") : input.deploymentDir;
+    if (!isKnownCwd(step.cwd)) {
+      return {
+        buildOk: false,
+        detail: `refused: build step's cwd "${step.cwd}" does not resolve to a known BUILD_REGISTRY entry`,
+        stdout: combinedOutput,
+        mocked: false,
+      };
+    }
+    const cwd = step.cwd === "deployment" ? input.deploymentDir : path.join(input.deploymentDir, step.cwd);
 
     // The repo's own Dockerfile can be wrong for our purposes (see
     // buildRegistry.ts's dockerfileOverride doc comment) — written right
     // before the one step that reads it, since the repo directory doesn't
-    // exist until the clone step (earlier in this same sequence) has run.
-    if (input.payload.dockerfile_override && step.command.startsWith("docker build")) {
-      writeFileSync(path.join(cwd, "Dockerfile"), input.payload.dockerfile_override, "utf-8");
-      input.onLog("[build] wrote corrected Dockerfile (see buildRegistry.ts dockerfileOverride)");
+    // exist until that repo's own clone step (earlier in this same
+    // sequence) has run. Keyed by this step's own cwd (its clone dir), not
+    // by service name — a single build can now involve more than one cloned
+    // repo (nodes/buildRegistry.ts's `pairedWith` mechanism), and this is
+    // what keeps each repo getting only its own Dockerfile, never another
+    // build-sentinel's.
+    const overrideForThisBuild = input.payload.dockerfile_override?.[step.cwd];
+    if (overrideForThisBuild && step.command.startsWith("docker build")) {
+      writeFileSync(path.join(cwd, "Dockerfile"), overrideForThisBuild, "utf-8");
+      input.onLog(`[build] wrote corrected Dockerfile for ${step.cwd} (see buildRegistry.ts dockerfileOverride)`);
     }
 
     input.onLog(`[build] running: ${step.command}`);

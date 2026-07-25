@@ -185,9 +185,19 @@ export function App() {
 
             {detail.iac_payload && (
               <section className="card p-4">
-                <h3 className="card-title mb-2.5">
-                  Infrastructure as Code — {detail.iac_payload.template_id}
-                </h3>
+                <div className="flex items-center justify-between gap-3 flex-wrap mb-2.5">
+                  <h3 className="card-title">
+                    Infrastructure as Code — {detail.iac_payload.template_id}
+                  </h3>
+                  <a
+                    className="chip inline-flex items-center gap-1.5"
+                    href={`/api/runs/${detail.run.request_id}/iac/download`}
+                    download
+                    title="Download every rendered file (docker-compose.yml, Dockerfiles, Terraform, etc.) as a .zip"
+                  >
+                    ⬇ Download all files
+                  </a>
+                </div>
                 <IacFileViewer files={detail.iac_payload.files} diffFrom={detail.iac_payload.diff_from} />
               </section>
             )}

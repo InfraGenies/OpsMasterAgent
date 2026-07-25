@@ -180,6 +180,18 @@ see `buildRegistry.ts`'s doc comment for exactly why UC-1's needs one), and `hea
 threaded through from the `variables.health_path` every template already accepted, benefiting every
 existing use case, not just the build path).
 
+**Third divergence, added when a second build-sentinel entry (a paired frontend) was introduced**:
+`cwd` widened from the closed 2-value enum `"deployment" | "repo"` to `"deployment"` or any
+`"repo-<registry key>"`-shaped string — one clone directory per build-sentinel service, so a single build
+can clone more than one repo (e.g. UC-2's RealWorld backend + frontend pair) without the second clone
+colliding with the first. `dockerfile_override` and `health_path` both widened from a single scalar to a
+map — `dockerfile_override` keyed by **`cwd`** (the field `nodes/build.ts` actually has in hand when it
+needs to know which Dockerfile a given `docker build` step should use), `health_path` keyed by
+**CapacityPlan service name** (what `orchestrator/pipeline.ts`/`nodes/verify.ts` work in terms of) — a
+deliberate asymmetry, not an inconsistency to "fix." Every non-fullstack template still populates exactly
+one entry in each map, so this widening is invisible to every existing use case; only
+`compose-realworld-fullstack-v1` populates two.
+
 ## 3b. PolicyReport  (iac_generator ⇄ policy_validator self-correction loop, then → approval gate)
 
 Not in the original agent set — see `03b-policy-validator.md` for why and how this fits in.
