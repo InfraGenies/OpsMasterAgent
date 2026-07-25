@@ -176,6 +176,32 @@ function buildAwsOptions(planRequest: PlanRequest, humanFeedback?: string): Capa
   return [economy, highAvailability];
 }
 
+/**
+ * At low enough load, balanced's 20% headroom (and, outside a prod-like
+ * environment, its replica floor too) never crosses a replica-count
+ * threshold above economy's — so the two tiers can render with identical
+ * services/cost. That's mathematically correct, not a bug, but silently
+ * showing two "different" tiers at the same price reads as broken. Appends
+ * a one-sentence note to the higher tier's reasoning when this happens,
+ * checked adjacently (economy vs balanced, then balanced vs
+ * high_availability — high_availability's unconditional +1 replica makes
+ * this rare for that pair, but still checked for consistency).
+ */
+function noteConvergedTiers(options: CapacityPlanOption[]): void {
+  const byTier = new Map(options.map((o) => [o.tier, o]));
+  const adjacentPairs: [Tier, Tier][] = [
+    ["economy", "balanced"],
+    ["balanced", "high_availability"],
+  ];
+  for (const [lowerTier, higherTier] of adjacentPairs) {
+    const lower = byTier.get(lowerTier);
+    const higher = byTier.get(higherTier);
+    if (lower && higher && higher.estimated_cost_usd_monthly === lower.estimated_cost_usd_monthly) {
+      higher.reasoning += ` ${higher.tier} offers no improvement over ${lower.tier} at this load level — the extra headroom/replica-floor rules didn't push replicas (or cost) any higher than ${lower.tier}'s.`;
+    }
+  }
+}
+
 function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): CapacityPlan {
   // Enterprise Architecture Advisor: checked before constraints.target==="aws"
   // so it never collides with UC-9's fixed retail-store-sample-app worked
@@ -449,6 +475,7 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
   }
 
   const options = tierConfigs(isProd).map(buildOption);
+  noteConvergedTiers(options);
   const recommended_tier: Tier = environmentLower.includes("dev") ? "economy" : "balanced";
 
   return {

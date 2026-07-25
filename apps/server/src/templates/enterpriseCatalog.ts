@@ -82,7 +82,8 @@ function baseComputeFiles(input: RenderEnterpriseArchetypeInput): IaCFile[] {
 }
 
 provider "aws" {
-  region = var.aws_region
+  region  = var.aws_region
+  profile = var.aws_profile
 }
 
 data "aws_availability_zones" "available" {
@@ -303,7 +304,19 @@ output "alb_dns_name" {
   const variablesTf = `variable "aws_region" {
   type        = string
   default     = "us-east-1"
-  description = "AWS region to deploy into"
+  description = "AWS region to deploy into — edit this (or override in terraform.tfvars) for your target region"
+}
+
+variable "aws_profile" {
+  type        = string
+  default     = null
+  description = <<-EOT
+    Named AWS CLI profile to authenticate with (from ~/.aws/credentials, set up via \`aws configure
+    --profile <name>\`). Leave null to fall back to the default credential chain (AWS_ACCESS_KEY_ID /
+    AWS_SECRET_ACCESS_KEY env vars, an EC2/ECS instance role, etc.).
+    NEVER put access keys or secrets directly in this file or in terraform.tfvars — credentials belong
+    in the AWS CLI's own credential store or environment variables, not in a project file.
+  EOT
 }
 
 variable "environment_name" {
@@ -343,7 +356,13 @@ variable "db_multi_az" {
 }
 `;
 
-  const tfvars = `environment_name = ${tfString(input.environmentName)}
+  const tfvars = `# --- Edit these two for your own AWS account before running terraform init/plan/apply ---
+# aws_region  = "us-east-1"        # target region
+# aws_profile = "my-aws-profile"   # named profile from ~/.aws/credentials (aws configure --profile ...)
+#                                  # leave commented out to use the default credential chain instead
+# NEVER put an access key or secret directly in this file.
+
+environment_name = ${tfString(input.environmentName)}
 az_count         = ${azCount}
 task_cpu         = ${taskCpu}
 task_memory      = ${taskMemory}

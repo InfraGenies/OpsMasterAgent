@@ -44,6 +44,13 @@ Tier rules:
   say so explicitly in availability_notes rather than implying real failover exists.
 - An explicit replica count stated in the request (e.g. "3 replicas") is an instruction, not a
   sizing input — use it for every tier equally instead of the load-based formula, and say so.
+- At low enough load, a higher tier's extra headroom/replica-floor can still round down to the
+  same replica count (and therefore the same cost) as the tier below it — e.g. balanced's 20%
+  headroom on a very low rps often doesn't cross a replica-count threshold above economy's. When
+  a tier ends up identical in cost/replicas to the tier below it, say so explicitly in that
+  tier's reasoning (e.g. "balanced offers no improvement over economy at this load level") rather
+  than silently repeating the same numbers with no explanation — a reviewer seeing two
+  identically-priced tiers with no comment will read it as a bug, not a correct outcome.
 
 Cost estimate (local rate table, not a live pricing API — say "estimated" not "actual"):
 $0.04/vCPU-hour, $0.005/GiB-RAM-hour, $0.10/GiB-storage-month, 730 hours/month. Sum compute
