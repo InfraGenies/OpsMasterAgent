@@ -19,6 +19,8 @@ export interface VerifyInput {
   forceFail?: boolean;
   /** UC-9: AWS/Terraform path never has a live endpoint to probe (plan-only, nothing applied) — set to the deploy step's detail message to short-circuit straight to a plan-based verify report. */
   terraformDeployDetail?: string;
+  /** See DeployInput.mockOverride (nodes/deploy.ts) — same reasoning, kept consistent across the build/deploy/verify chain. */
+  mockOverride?: boolean;
 }
 
 function joinUrl(base: string, path: string): string {
@@ -89,7 +91,7 @@ export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
     };
   }
 
-  if (await shouldMockDeploy()) {
+  if (input.mockOverride ?? (await shouldMockDeploy())) {
     if (input.forceFail) {
       const checks: CheckResult[] = input.endpoints.map((e) => {
         input.onLog(`[mock verify] simulated health check GET ${joinUrl(e, input.healthPath)} -> 500 (forced failure marker in request)`);

@@ -13,8 +13,9 @@ import { loadPrompt } from "../llm/promptLoader.js";
 import { loadSkill } from "../llm/skillLoader.js";
 import { runLLMJson } from "../llm/runLLMJson.js";
 import { renderTemplate, TEMPLATES, templateCatalogSummary } from "../templates/catalog.js";
-import { resolveFreeformSecrets, resolveVariableSecrets } from "../templates/secrets.js";
+import { generateSecret, resolveFreeformSecrets, resolveVariableSecrets } from "../templates/secrets.js";
 import { appServices, cacheService, dbService } from "../templates/types.js";
+import { BUILD_REGISTRY, isBuildSentinel } from "./buildRegistry.js";
 import type { TemplateId } from "@ops-master/shared";
 
 const execFileAsync = promisify(execFile);
@@ -228,6 +229,10 @@ export async function runIacGenerator(input: IacGeneratorInput): Promise<IacGene
   let files: IaCFile[];
   let applyCommand: string;
   let rollbackCommand: string;
+  let healthPath = "/";
+  let buildSteps: IaCPayload["build_steps"] = null;
+  let resolvedImages: IaCPayload["resolved_images"] = null;
+  let dockerfileOverride: IaCPayload["dockerfile_override"] = null;
 
   if ("format" in result.value) {
     // Freeform: nothing in the catalogue fit, so the LLM wrote files
@@ -244,7 +249,73 @@ export async function runIacGenerator(input: IacGeneratorInput): Promise<IacGene
     // this is genuinely one of the rendered catalogue ids.
     const catalogTemplateId = result.value.template_id as Exclude<TemplateId, "freeform">;
     const variables = resolveVariableSecrets(result.value.variables);
-    const rendered = renderTemplate(catalogTemplateId, input.plan, variables, {
+
+    // Build-sentinel path (nodes/buildRegistry.ts): the LLM/mock planner
+    // never emits a real image for this service, only a "__BUILD__:<key>"
+    // marker — resolve it to a locally-built tag here, server-side, and
+    // construct the git-clone/npm-build/docker-build/migrate sequence that
+    // nodes/build.ts will run before deploy. The template layer below never
+    // learns about builds; it just renders a normal image string.
+    let renderPlan = input.plan;
+    const buildService = input.plan.services.find((s) => isBuildSentinel(s.image));
+    if (buildService) {
+      const key = isBuildSentinel(buildService.image)!;
+      const entry = BUILD_REGISTRY[key];
+      const localTag = `${input.projectName}-app:${entry.commitSha.slice(0, 12)}`;
+      renderPlan = {
+        ...input.plan,
+        services: input.plan.services.map((s) => (s.name === buildService.name ? { ...s, image: localTag } : s)),
+      };
+      // Backend-decided, not LLM-decided — this is a known service with a
+      // known health endpoint, never something to leave to model variance.
+      variables.health_path = entry.healthPath;
+
+      const db = dbService(renderPlan);
+      if (!db) {
+        return {
+          ok: false,
+          needed: `build-sentinel service "${buildService.name}" requires a db service in the plan, none found`,
+          rawResponse: result.rawResponse,
+          mocked: result.mocked,
+        };
+      }
+      // The migration step needs Postgres reachable from the host — the
+      // mock planner adds this network.expose entry itself, but a real LLM
+      // only reliably follows the "use this sentinel image" instruction, not
+      // a second unrelated one about exposing a port (same reliability gap
+      // hit earlier with architecture_recommendation.enterprise_context) —
+      // so backfill it deterministically here rather than depending on the
+      // model to remember. Not checked by readiness_check's port-conflict
+      // reassignment (that already ran, at Gate 1, before this port existed
+      // in the plan) — a genuine conflict on this port will surface as a
+      // clear build-step failure rather than a graceful reassignment.
+      let dbExpose = renderPlan.network.expose.find((e) => e.service === db.name);
+      if (!dbExpose) {
+        dbExpose = { service: db.name, host_port: db.ports[0] ?? 5432 };
+        renderPlan = { ...renderPlan, network: { ...renderPlan.network, expose: [...renderPlan.network.expose, dbExpose] } };
+      }
+      const dbUser = typeof variables.db_user === "string" ? variables.db_user : "appuser";
+      const dbName = typeof variables.db_name === "string" ? variables.db_name : "appdb";
+      const dbPassword = typeof variables.db_password === "string" ? variables.db_password : generateSecret();
+      // Host-side migration step (prisma CLI only exists in the cloned
+      // repo's own node_modules) reaches Postgres via its published host
+      // port, not the in-network service name/port the app container uses.
+      const hostDatabaseUrl = `postgres://${dbUser}:${dbPassword}@localhost:${dbExpose.host_port}/${dbName}`;
+
+      buildSteps = [
+        { command: `git clone ${entry.repoUrl} repo`, cwd: "deployment" },
+        { command: `git checkout ${entry.commitSha}`, cwd: "repo" },
+        { command: "npm ci", cwd: "repo" },
+        { command: "npm run build", cwd: "repo" },
+        { command: `docker build -t ${localTag} .`, cwd: "repo" },
+        { command: `docker compose -p ${input.projectName} up -d --wait ${db.name}`, cwd: "deployment" },
+        { command: "npx prisma migrate deploy", cwd: "repo", env: { DATABASE_URL: hostDatabaseUrl } },
+      ];
+      resolvedImages = { [buildService.name]: localTag };
+      dockerfileOverride = entry.dockerfileOverride;
+    }
+
+    const rendered = renderTemplate(catalogTemplateId, renderPlan, variables, {
       requestId: input.requestId,
       projectName: input.projectName,
     });
@@ -253,6 +324,7 @@ export async function runIacGenerator(input: IacGeneratorInput): Promise<IacGene
     templateId = catalogTemplateId;
     applyCommand = rendered.applyCommand;
     rollbackCommand = rendered.rollbackCommand;
+    healthPath = typeof variables.health_path === "string" ? variables.health_path : "/";
   }
 
   for (const file of files) {
@@ -272,6 +344,10 @@ export async function runIacGenerator(input: IacGeneratorInput): Promise<IacGene
     rollback_command: rollbackCommand,
     diff_from: input.diffFrom,
     validation,
+    build_steps: buildSteps,
+    resolved_images: resolvedImages,
+    dockerfile_override: dockerfileOverride,
+    health_path: healthPath,
   };
 
   return { ok: true, value: payload, rawResponse: result.rawResponse, mocked: result.mocked };

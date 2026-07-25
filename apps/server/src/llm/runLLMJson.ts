@@ -17,6 +17,17 @@ export interface RunLLMJsonResult<T> {
   mocked: boolean;
 }
 
+/** Thrown when the model's response fails schema validation on both the initial attempt and the one retry — carries the last raw response text so the caller can persist it (to the audit trail, logs, etc.) instead of it being silently discarded. */
+export class LLMValidationError extends Error {
+  constructor(
+    message: string,
+    public readonly rawResponse: string
+  ) {
+    super(message);
+    this.name = "LLMValidationError";
+  }
+}
+
 /**
  * Calls Claude, parses the response as JSON, validates against `schema`.
  * On a parse/validation failure, retries once with the error appended to
@@ -31,6 +42,7 @@ export async function runLLMJson<T>(args: RunLLMJsonArgs<T>): Promise<RunLLMJson
   }
 
   let lastError: string | undefined;
+  let lastRaw = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const user =
       attempt === 0
@@ -38,6 +50,7 @@ export async function runLLMJson<T>(args: RunLLMJsonArgs<T>): Promise<RunLLMJson
         : `${args.user}\n\nYour previous response failed validation with this error:\n${lastError}\nRespond again with ONLY corrected JSON.`;
 
     const raw = await completeRaw(args.system, user);
+    lastRaw = raw;
     const jsonText = extractJson(raw);
     try {
       const parsed = JSON.parse(jsonText);
@@ -51,5 +64,5 @@ export async function runLLMJson<T>(args: RunLLMJsonArgs<T>): Promise<RunLLMJson
     }
   }
 
-  throw new Error(`runLLMJson[${args.node}]: failed after retry — ${lastError}`);
+  throw new LLMValidationError(`runLLMJson[${args.node}]: failed after retry — ${lastError}`, lastRaw);
 }

@@ -112,7 +112,18 @@ export const ArchitectureAlternativeSchema = z.object({
 export type ArchitectureAlternative = z.infer<typeof ArchitectureAlternativeSchema>;
 
 export const ArchitectureRecommendationSchema = z.object({
-  enterprise_context: EnterpriseContextSchema,
+  /**
+   * Optional here even though every consumer can rely on it always being
+   * present by the time they see it: this is a verbatim duplicate of
+   * PlanRequest.enterprise_context that real LLM calls proved unreliable
+   * at reproducing (esp. the free-text signal_reasoning field), so
+   * nodes/planner.ts backfills it deterministically from PlanRequest right
+   * after parsing rather than trusting the model to copy it correctly.
+   * Optional purely so a response omitting it still passes validation
+   * instead of burning the one runLLMJson retry on a field the backend
+   * was always going to overwrite anyway.
+   */
+  enterprise_context: EnterpriseContextSchema.optional(),
   archetype: PlatformArchetypeSchema,
   archetype_reasoning: z.string(),
   criticality_score: z.number(),
@@ -280,6 +291,29 @@ export const IaCPayloadSchema = z.object({
     ok: z.boolean(),
     output: z.string(),
   }),
+  /**
+   * Pre-apply build pipeline (git clone -> npm ci -> build -> docker build ->
+   * bring up a dependency -> run migrations), ordered. Null except on the
+   * build-sentinel path (nodes/buildRegistry.ts) — every existing use case
+   * leaves this null and is completely unaffected. Never produced by the
+   * LLM; iac_generator derives it entirely from the hardcoded build registry.
+   */
+  build_steps: z
+    .array(
+      z.object({
+        command: z.string(),
+        cwd: z.enum(["deployment", "repo"]),
+        env: z.record(z.string(), z.string()).optional(),
+      })
+    )
+    .nullable()
+    .default(null),
+  /** service name -> locally-built image tag, populated only on the build-sentinel path so environment snapshots reflect what's actually running, not the __BUILD__:... sentinel string. */
+  resolved_images: z.record(z.string(), z.string()).nullable().default(null),
+  /** Full Dockerfile content to write into the cloned repo before the `docker build` step, replacing the repo's own — only set when BuildRegistryEntry.dockerfileOverride is non-null (nodes/buildRegistry.ts). */
+  dockerfile_override: z.string().nullable().default(null),
+  /** HTTP path verify checks against — was previously hardcoded to "/" in pipeline.ts regardless of what the template actually serves; now threaded through from variables.health_path for every template. */
+  health_path: z.string().default("/"),
 });
 export type IaCPayload = z.infer<typeof IaCPayloadSchema>;
 
@@ -431,6 +465,7 @@ export const NodeNameSchema = z.enum([
   "iac_generator",
   "policy_validator",
   "approval_gate",
+  "build",
   "deploy",
   "verify",
   "rollback",

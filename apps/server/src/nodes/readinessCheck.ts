@@ -27,6 +27,47 @@ function isPortFree(port: number): Promise<boolean> {
   });
 }
 
+/**
+ * On Docker Desktop for Windows, container ports are forwarded through a
+ * WSL2/HNS proxy rather than a normal Windows-process bind on 127.0.0.1 -
+ * a raw isPortFree() probe can report a port "free" even while `docker ps`
+ * shows it published, because the forwarding layer isn't visible to a plain
+ * socket bind the way a native process's listener would be. Cross-checking
+ * `docker ps` catches exactly the ports isPortFree() is blind to.
+ */
+async function dockerPublishedPorts(): Promise<Set<number>> {
+  try {
+    const { stdout } = await execFileAsync("docker", ["ps", "--format", "{{.Ports}}"], { timeout: 10000 });
+    const ports = new Set<number>();
+    const re = /:(\d+)->/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(stdout))) ports.add(Number(m[1]));
+    return ports;
+  } catch {
+    return new Set();
+  }
+}
+
+async function isPortBusy(port: number, published: Set<number>): Promise<boolean> {
+  if (published.has(port)) return true;
+  return !(await isPortFree(port));
+}
+
+/** Scans forward from the conflicting port for a nearby free one, checked the same (docker-ps + bind) way. `taken` holds ports already claimed by an earlier reassignment in this same pass, so two conflicting services never get reassigned onto each other. */
+async function findFreePort(startPort: number, published: Set<number>, taken: Set<number>): Promise<number | null> {
+  for (let candidate = startPort + 1; candidate < startPort + 50; candidate++) {
+    if (taken.has(candidate)) continue;
+    if (!(await isPortBusy(candidate, published))) return candidate;
+  }
+  return null;
+}
+
+export interface PortReassignment {
+  service: string;
+  from: number;
+  to: number;
+}
+
 function isAwsPlan(plan: CapacityPlanOption): boolean {
   return plan.services.some((s) => s.managed_service);
 }
@@ -68,42 +109,71 @@ async function checkDockerDaemon(): Promise<ReadinessCheckResult> {
   }
 }
 
+/**
+ * Mutates `plan.network.expose` in place when a conflicting port can be
+ * swapped for a nearby free one — `plan` is the caller's selected-tier
+ * CapacityPlanOption (a live reference into the full CapacityPlan's
+ * `options` array, not a copy), so the fix is visible to whatever the
+ * caller does with that plan next (e.g. re-persisting it as the new
+ * "planner" audit output before iac_generator renders it).
+ */
 async function checkHostPortsFree(
   plan: CapacityPlanOption,
   existingPlan: CapacityPlanOption | null,
   demoPortConflict: boolean
-): Promise<ReadinessCheckResult> {
+): Promise<{ result: ReadinessCheckResult; reassignments: PortReassignment[] }> {
   if (demoPortConflict) {
     return {
-      name: "host_ports_free",
-      status: "fail",
-      detail: "port 3000 is already in use by another process (demo trigger)",
-      blocking: true,
+      result: {
+        name: "host_ports_free",
+        status: "fail",
+        detail: "port 3000 is already in use by another process (demo trigger)",
+        blocking: true,
+      },
+      reassignments: [],
     };
   }
 
   const existingPorts = new Set((existingPlan?.network.expose ?? []).map((e) => e.host_port));
-  const portsToCheck = plan.network.expose.map((e) => e.host_port).filter((p) => !existingPorts.has(p));
+  const exposesToCheck = plan.network.expose.filter((e) => !existingPorts.has(e.host_port));
 
-  const busy: number[] = [];
-  for (const port of portsToCheck) {
-    if (!(await isPortFree(port))) busy.push(port);
+  const published = await dockerPublishedPorts();
+  const taken = new Set(exposesToCheck.map((e) => e.host_port));
+  const reassignments: PortReassignment[] = [];
+  const stillBusy: number[] = [];
+
+  for (const expose of exposesToCheck) {
+    if (!(await isPortBusy(expose.host_port, published))) continue;
+    const replacement = await findFreePort(expose.host_port, published, taken);
+    if (replacement == null) {
+      stillBusy.push(expose.host_port);
+      continue;
+    }
+    reassignments.push({ service: expose.service, from: expose.host_port, to: replacement });
+    taken.delete(expose.host_port);
+    taken.add(replacement);
+    expose.host_port = replacement;
   }
 
-  if (busy.length) {
+  if (stillBusy.length) {
     return {
-      name: "host_ports_free",
-      status: "fail",
-      detail: `host port(s) already in use: ${busy.join(", ")}`,
-      blocking: true,
+      result: {
+        name: "host_ports_free",
+        status: "fail",
+        detail: `host port(s) already in use and no free port found nearby: ${stillBusy.join(", ")}`,
+        blocking: true,
+      },
+      reassignments,
     };
   }
-  return {
-    name: "host_ports_free",
-    status: "pass",
-    detail: portsToCheck.length ? `${portsToCheck.length} host port(s) free` : "no new host ports to check",
-    blocking: true,
-  };
+
+  const detail = reassignments.length
+    ? `auto-reassigned to avoid a conflict: ${reassignments.map((r) => `${r.service} ${r.from}->${r.to}`).join(", ")}`
+    : exposesToCheck.length
+      ? `${exposesToCheck.length} host port(s) free`
+      : "no new host ports to check";
+
+  return { result: { name: "host_ports_free", status: "pass", detail, blocking: true }, reassignments };
 }
 
 async function checkDiskSpace(): Promise<ReadinessCheckResult> {
@@ -221,11 +291,14 @@ export interface ReadinessCheckInput {
   isEnterpriseMode?: boolean;
 }
 
-export async function runReadinessCheck(input: ReadinessCheckInput): Promise<ReadinessReport> {
+export async function runReadinessCheck(
+  input: ReadinessCheckInput
+): Promise<{ report: ReadinessReport; portReassignments: PortReassignment[] }> {
   const aws = isAwsPlan(input.plan) || (input.isEnterpriseMode ?? false);
+  const hostPorts = await checkHostPortsFree(input.plan, input.existingPlan, input.demoPortConflict);
   const checks: ReadinessCheckResult[] = [
     aws ? await checkTerraformCli() : await checkDockerDaemon(),
-    await checkHostPortsFree(input.plan, input.existingPlan, input.demoPortConflict),
+    hostPorts.result,
     await checkDiskSpace(),
     // AWS's fixed 5-service topology is a known, deliberate shape (see
     // iacGenerator.ts's mockIacGenerator AWS branch) — the single-app-service
@@ -239,9 +312,7 @@ export async function runReadinessCheck(input: ReadinessCheckInput): Promise<Rea
   const blockers = checks.filter((c) => c.status === "fail" && c.blocking).map((c) => c.detail);
 
   return {
-    request_id: input.requestId,
-    checks,
-    ready: blockers.length === 0,
-    blockers,
+    report: { request_id: input.requestId, checks, ready: blockers.length === 0, blockers },
+    portReassignments: hostPorts.reassignments,
   };
 }

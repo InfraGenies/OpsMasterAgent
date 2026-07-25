@@ -14,6 +14,7 @@ import { estimateEcsFargateMonthlyCost, estimateEksMonthlyCost } from "../pricin
 import { estimateMonthlyCost } from "../pricing/rateTable.js";
 import { checkSandboxLimits, mergeCapacityPlan } from "./planMerge.js";
 import { buildArchitectureRecommendation, buildEnterpriseOptions } from "./enterpriseRulesEngine.js";
+import { BUILD_REGISTRY, BUILD_SENTINEL_PREFIX } from "./buildRegistry.js";
 
 // sizing-workloads is needed on every planner call regardless of request
 // type; managed-service-substitution/compliance-and-dr-reasoning are
@@ -38,7 +39,7 @@ const SCHEMA_SHAPE = `{
   "recommended_tier": "economy" | "balanced" | "high_availability",
   "feasible": boolean,
   "infeasibility_reason": "string | null",
-  "architecture_recommendation": "OMIT this field entirely unless enterprise_mode=true (see ENTERPRISE MODE note below) — when present, include an alternatives_considered array (see note)"
+  "architecture_recommendation": "OMIT this field entirely unless enterprise_mode=true (see ENTERPRISE MODE note below). When present it MUST match this exact shape, field names and enum values verbatim — no substitute names, no extra enum values: {\\"archetype\\": \\"solo_ecs_fargate\\" | \\"team_ecs_fargate_ha\\" | \\"scale_up_eks\\" | \\"enterprise_eks_landing_zone\\", \\"archetype_reasoning\\": \\"string\\", \\"criticality_score\\": number, \\"criticality_band\\": \\"low\\" | \\"medium\\" | \\"high\\" | \\"very_high\\", \\"criticality_reasoning\\": \\"string\\", \\"managed_controls\\": [{\\"name\\": \\"string\\", \\"category\\": \\"network\\" | \\"identity\\" | \\"detection\\" | \\"data_protection\\" | \\"dr_ha\\" | \\"compliance\\" | \\"cost_governance\\", \\"triggered_by\\": \\"archetype\\" | \\"criticality\\" | \\"compliance_overlay\\", \\"reasoning\\": \\"string\\", \\"compliance_tags\\": [\\"string\\"], \\"estimated_cost_usd_monthly\\": number, \\"terraform_bundle_template_id\\": \\"string | null\\"}], \\"compliance_overlay\\": [\\"pci_dss\\" | \\"hipaa\\" | \\"soc2\\" | \\"none\\", ... one entry per compliance_targets value in enterprise_context, NOT objects], \\"total_controls_cost_usd_monthly\\": number, \\"alternatives_considered\\": [{\\"option\\": \\"string\\", \\"pros\\": \\"string\\", \\"cons\\": \\"string\\", \\"rejected_because\\": \\"string | null\\"}], \\"client_classification\\": \\"string\\", \\"enterprise_context\\": <copy of the input PlanRequest.enterprise_context, verbatim>}"
 }`;
 
 const AWS_TARGET_NOTE = "\n\n" + loadSkill("managed-service-substitution");
@@ -264,6 +265,32 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
     appPort = 3001;
     appVolume = true;
     runtimeNote = "Uptime Kuma monitoring dashboard (single instance)";
+  } else if (/\btodo\b/.test(rawLower) && !planRequest.repo_url) {
+    // UC-2 warm-up path: generic demo request with no repo/build given, so
+    // there's no real app code to run — a bare runtime base image (node:*)
+    // has no server process and will always fail its health check. Use a
+    // well-known image that actually serves HTTP out of the box instead
+    // (sizing-workloads.md skill rule).
+    image = "docker/welcome-to-docker";
+    appPort = 80;
+    runtimeNote = "Demo todo app warm-up (no repo/build given) — docker/welcome-to-docker serves real HTTP traffic";
+  } else if (
+    planRequest.runtime === "nodejs18" &&
+    planRequest.dependencies.includes("postgresql") &&
+    !planRequest.repo_url &&
+    !/\b(demo-fail|wrong (db )?password)\b/i.test(rawLower)
+  ) {
+    // UC-1 flagship path: same "no real app code" problem as UC-2, but this
+    // scenario is supposed to prove capacity planning against a credible
+    // reference API, not a placeholder — emit the build sentinel
+    // (nodes/buildRegistry.ts) so iac_generator clones and builds the real
+    // app instead of picking another off-the-shelf substitute. The
+    // demo-fail/wrong-password guard keeps UC-8b's fast offline rollback
+    // demo from being silently rerouted into a multi-minute real build.
+    const realworldEntry = BUILD_REGISTRY["realworld-node-express"];
+    image = BUILD_SENTINEL_PREFIX + "realworld-node-express";
+    appPort = realworldEntry.containerPort;
+    runtimeNote = `${realworldEntry.displayName} (built from source, no repo/build given so the known flagship reference is used)`;
   }
 
   // UC-4: an explicit replica count in the request is an instruction, not a
@@ -341,6 +368,16 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
       storage.push({ name: "dbdata", type: "volume", size: "1Gi", attached_to: "db" });
       internal.push("db");
       reasons.push("PostgreSQL sized at 1 instance / 1Gi with a named volume for data, never replicated in sandbox.");
+      if (image.startsWith(BUILD_SENTINEL_PREFIX)) {
+        // The build-sentinel path's migration step runs prisma as a host
+        // process (the prisma CLI only exists in the cloned repo's own
+        // node_modules, never in the production image) — it needs to reach
+        // Postgres directly, so publish its port. No other use case does
+        // this (network.expose has no db entry, catalog.ts leaves it
+        // unpublished, matching every existing template's output).
+        expose.push({ service: "db", host_port: 5432 });
+        reasons.push("Postgres port published to the host so the build pipeline's migration step can reach it directly.");
+      }
     } else if (planRequest.dependencies.includes("mysql")) {
       services.push({ name: "db", image: "mysql:8", cpu: "1.0", memory: "1Gi", replicas: 1, ports: [3306] });
       storage.push({ name: "dbdata", type: "volume", size: "1Gi", attached_to: "db" });
@@ -405,6 +442,20 @@ export async function runPlanner(
   });
 
   let plan = result.value;
+
+  // Real LLM calls proved unreliable at reproducing enterprise_context
+  // verbatim inside architecture_recommendation (esp. the free-text
+  // signal_reasoning field) even when explicitly instructed to — the
+  // schema allows the model to omit it, and this backfills it from
+  // PlanRequest (already validated at intake) so it's always correct
+  // regardless of what the model did or didn't include.
+  if (plan.architecture_recommendation && planRequest.enterprise_context) {
+    plan = {
+      ...plan,
+      architecture_recommendation: { ...plan.architecture_recommendation, enterprise_context: planRequest.enterprise_context },
+    };
+  }
+
   if (planRequest.operation === "modify" && existingPlan) {
     plan = mergeCapacityPlan(existingPlan, plan);
   }

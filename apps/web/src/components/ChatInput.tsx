@@ -15,6 +15,7 @@ export function ChatInput({
     if (!text.trim() || disabled) return;
     onSubmit(text.trim(), planOnly);
     setText("");
+    setPlanOnly(false);
   }
 
   return (

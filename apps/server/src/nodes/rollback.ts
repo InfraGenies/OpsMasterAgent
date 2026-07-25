@@ -10,6 +10,8 @@ export interface RollbackInput {
   projectName: string;
   operation: Operation;
   onLog: (line: string) => void;
+  /** See DeployInput.mockOverride (nodes/deploy.ts) — same reasoning, kept consistent across the deploy/rollback pair. */
+  mockOverride?: boolean;
 }
 
 export interface RollbackOutcome {
@@ -50,7 +52,7 @@ export async function runRollback(input: RollbackInput): Promise<RollbackOutcome
     if (!argv) {
       return { ok: false, detail: "internal error: restore command failed allow-list check", stdout: "", commandExecuted: restoreCommand };
     }
-    if (await shouldMockDeploy()) {
+    if (input.mockOverride ?? (await shouldMockDeploy())) {
       input.onLog(`[mock rollback] simulating restore: ${restoreCommand}`);
       return {
         ok: true,

@@ -12,10 +12,13 @@ import type {
 import { env } from "../config.js";
 import { runComplianceCheck } from "../nodes/complianceCheck.js";
 import { decodeSnapshot, encodeSnapshot } from "../nodes/envSnapshot.js";
+import { runBuild } from "../nodes/build.js";
 import { runDeploy } from "../nodes/deploy.js";
 import { runIacGenerator } from "../nodes/iacGenerator.js";
+import { appServices, hostPortFor } from "../templates/types.js";
 import { runIntake } from "../nodes/intake.js";
 import { runPlanner, selectOption } from "../nodes/planner.js";
+import { LLMValidationError } from "../llm/runLLMJson.js";
 import { estimateMonthlyCost } from "../pricing/rateTable.js";
 import { runPolicyValidator } from "../nodes/policyValidator.js";
 import { runReadinessCheck } from "../nodes/readinessCheck.js";
@@ -35,6 +38,34 @@ const TIMEOUT_GATE_STATUSES = ["awaiting_plan_approval", "awaiting_approval"] as
 
 function deploymentDirFor(requestId: string): string {
   return path.join(env.DEPLOYMENTS_DIR, requestId);
+}
+
+/**
+ * runPlanner can throw LLMValidationError after exhausting runLLMJson's one
+ * retry (seen in practice on the Enterprise Architecture Advisor path, whose
+ * large architecture_recommendation output has more surface area to get
+ * wrong) — previously that raw response was discarded entirely, so a
+ * validation failure was undebuggable after the fact. Logged under `detail`,
+ * not `output`, so this failure event is never mistaken for a valid
+ * CapacityPlan by loadLatestNodeOutput's "latest planner output" lookup.
+ */
+async function runPlannerWithFailureAudit(
+  store: AuditStore,
+  requestId: string,
+  ...args: Parameters<typeof runPlanner>
+): ReturnType<typeof runPlanner> {
+  try {
+    return await runPlanner(...args);
+  } catch (err) {
+    const detail =
+      err instanceof LLMValidationError
+        ? `${err.message}\n\nRaw LLM response (truncated to 4000 chars):\n${err.rawResponse.slice(0, 4000)}`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    await logAudit(store, { request_id: requestId, node: "planner", actor: "agent", status: "failure", detail });
+    throw err;
+  }
 }
 
 function guessOperation(rawText: string): "create" | "modify" | "destroy" {
@@ -91,7 +122,8 @@ async function doRollback(
   payload: IaCPayload,
   operation: "create" | "modify" | "destroy",
   reason: string,
-  verifyReport?: Awaited<ReturnType<typeof runVerify>>
+  verifyReport?: Awaited<ReturnType<typeof runVerify>>,
+  mockOverride?: boolean
 ): Promise<void> {
   const store = getStore();
   const projectName = projectNameFor(requestId);
@@ -104,6 +136,7 @@ async function doRollback(
     projectName,
     operation,
     onLog: (line) => broadcastEvent("log_line", requestId, "rollback", line),
+    mockOverride,
   });
   await logAudit(store, {
     request_id: requestId,
@@ -220,7 +253,7 @@ async function reachPlanApprovalGate(
   const demoPortConflict = /\bport conflict\b/i.test(planRequest.raw_text);
 
   broadcastEvent("node_started", requestId, "readiness_check");
-  const readiness = await runReadinessCheck({
+  const { report: readiness, portReassignments } = await runReadinessCheck({
     requestId,
     plan,
     existingPlan: existing?.capacityPlan ?? null,
@@ -243,6 +276,26 @@ async function reachPlanApprovalGate(
   if (!readiness.ready) {
     await refuseRun(requestId, `infrastructure not ready: ${readiness.blockers.join("; ")}`);
     return;
+  }
+
+  // readiness_check may have auto-reassigned a conflicting host port on the
+  // live `plan` object (a reference into fullPlan.options) — re-persist the
+  // corrected CapacityPlan as the new latest "planner" output so approve_plan
+  // (which reloads it fresh from the audit trail) and the human at the gate
+  // both see the port that will actually be used, not the stale conflicting one.
+  if (portReassignments.length) {
+    const detail = `port(s) auto-reassigned by readiness_check to avoid a conflict: ${portReassignments
+      .map((r) => `${r.service} ${r.from}->${r.to}`)
+      .join(", ")}`;
+    await logAudit(store, {
+      request_id: requestId,
+      node: "planner",
+      actor: "agent",
+      status: "success",
+      detail,
+      output: fullPlan,
+    });
+    broadcastEvent("node_finished", requestId, "planner", fullPlan);
   }
 
   // compliance_check (02c-compliance-check.md): Enterprise Architecture
@@ -417,7 +470,7 @@ async function runIntakeThroughGate(
 
   broadcastEvent("node_started", requestId, "planner");
   const existingFullPlan = existing ? wrapAsSingleOptionPlan(existing.capacityPlan, requestId) : null;
-  const plannerResult = await runPlanner(planRequest, existingFullPlan);
+  const plannerResult = await runPlannerWithFailureAudit(store, requestId, planRequest, existingFullPlan);
   await logAudit(store, {
     request_id: requestId,
     node: "planner",
@@ -599,7 +652,7 @@ async function reworkPlan(
   } else {
     broadcastEvent("node_started", requestId, "planner");
     const existingFullPlan = existing ? wrapAsSingleOptionPlan(existing.capacityPlan, requestId) : null;
-    const plannerResult = await runPlanner(planRequest, existingFullPlan, comment ?? undefined);
+    const plannerResult = await runPlannerWithFailureAudit(store, requestId, planRequest, existingFullPlan, comment ?? undefined);
     await logAudit(store, {
       request_id: requestId,
       node: "planner",
@@ -638,15 +691,62 @@ async function runDeployThroughReport(requestId: string): Promise<void> {
     await refuseRun(requestId, "internal error: lost pipeline state before deploy");
     return;
   }
-  const plan = selectOption(fullPlan, fullPlan.recommended_tier);
+  let plan = selectOption(fullPlan, fullPlan.recommended_tier);
 
   const deploymentDir = deploymentDirFor(requestId);
+
+  // Build-sentinel path only (nodes/buildRegistry.ts): clone + npm build +
+  // docker build + bring up the db + migrate, before the normal `deploy`
+  // step below. Every existing template leaves build_steps null, so this
+  // never runs, never logs a "build" audit event, and behavior is otherwise
+  // byte-identical to before.
+  let mockOverride: boolean | undefined;
+  if (payload.build_steps?.length) {
+    broadcastEvent("node_started", requestId, "build");
+    const buildOutcome = await runBuild({
+      payload,
+      deploymentDir,
+      onLog: (line) => broadcastEvent("log_line", requestId, "build", line),
+    });
+    await logAudit(store, {
+      request_id: requestId,
+      node: "build",
+      actor: "agent",
+      status: buildOutcome.buildOk ? "success" : "failure",
+      detail: buildOutcome.detail,
+      output: { stdout: buildOutcome.stdout.slice(-4000) },
+    });
+    broadcastEvent("node_finished", requestId, "build", { ok: buildOutcome.buildOk, detail: buildOutcome.detail });
+
+    if (!buildOutcome.buildOk) {
+      await doRollback(requestId, payload, planRequest.operation, "build failed", undefined, buildOutcome.mocked || undefined);
+      return;
+    }
+    // A mocked build never actually produced an image — force the rest of
+    // this chain to mock too, so it can't be followed by a for-real deploy
+    // that would just fail against a nonexistent image (nodes/dockerProbe.ts:
+    // shouldMockBuild vs shouldMockDeploy are deliberately separate gates).
+    mockOverride = buildOutcome.mocked || undefined;
+  }
+
+  // Snapshot what's actually running, not the __BUILD__:... sentinel the
+  // planner emitted — resolved_images is only ever populated on the
+  // build-sentinel path (nodes/iacGenerator.ts).
+  if (payload.resolved_images) {
+    plan = {
+      ...plan,
+      services: plan.services.map((s) =>
+        payload.resolved_images && s.name in payload.resolved_images ? { ...s, image: payload.resolved_images[s.name] } : s
+      ),
+    };
+  }
 
   broadcastEvent("node_started", requestId, "deploy");
   const deployOutcome = await runDeploy({
     payload,
     deploymentDir,
     onLog: (line) => broadcastEvent("log_line", requestId, "deploy", line),
+    mockOverride,
   });
   await logAudit(store, {
     request_id: requestId,
@@ -660,21 +760,39 @@ async function runDeployThroughReport(requestId: string): Promise<void> {
   broadcastEvent("node_finished", requestId, "deploy", { ok: deployOutcome.deployOk, detail: deployOutcome.detail });
 
   if (!deployOutcome.deployOk) {
-    await doRollback(requestId, payload, planRequest.operation, "deploy failed");
+    await doRollback(requestId, payload, planRequest.operation, "deploy failed", undefined, mockOverride);
     return;
   }
 
-  const endpoints = plan.network.expose.map((e) => `http://localhost:${e.host_port}`);
+  // Every compose template fronts the app service on hostPortFor(plan,
+  // app.name, containerPort) — computed the identical way inside each
+  // template's own render() (templates/catalog.ts). Deriving the endpoint
+  // the same way here, rather than trusting plan.network.expose verbatim,
+  // is what the template actually published: a real LLM plan can carry an
+  // extra network.expose entry (e.g. a redundant "lb" service name) that
+  // compose-web-db-v1 silently ignores in favor of its own auto-generated
+  // load-balancer sidecar, which is keyed by the app service's name and
+  // falls back to a different port when no matching expose entry exists —
+  // checking plan.network.expose verbatim in that case verifies a port
+  // nothing is actually listening on. Confirmed via a real UC-1 run: deploy
+  // succeeded (container reported healthy) but verify checked the LLM's
+  // stray "lb" port instead of the one nginx was actually published on.
+  const appSvc = appServices(plan)[0];
+  const endpoints =
+    payload.format === "compose" && appSvc
+      ? [`http://localhost:${hostPortFor(plan, appSvc.name, appSvc.ports[0] ?? 3000)}`]
+      : plan.network.expose.map((e) => `http://localhost:${e.host_port}`);
 
   broadcastEvent("node_started", requestId, "verify");
   const verifyReport = await runVerify({
     requestId,
     endpoints,
-    healthPath: "/",
+    healthPath: payload.health_path,
     targetRps: planRequest.expected_load.rps,
     onLog: (line) => broadcastEvent("log_line", requestId, "verify", line),
     forceFail: /\b(demo-fail|wrong (db )?password)\b/i.test(planRequest.raw_text),
     terraformDeployDetail: payload.format === "terraform" ? deployOutcome.detail : undefined,
+    mockOverride,
   });
   await logAudit(store, {
     request_id: requestId,
@@ -687,7 +805,7 @@ async function runDeployThroughReport(requestId: string): Promise<void> {
   broadcastEvent("node_finished", requestId, "verify", verifyReport);
 
   if (verifyReport.verdict === "red") {
-    await doRollback(requestId, payload, planRequest.operation, "verify red", verifyReport);
+    await doRollback(requestId, payload, planRequest.operation, "verify red", verifyReport, mockOverride);
     return;
   }
 

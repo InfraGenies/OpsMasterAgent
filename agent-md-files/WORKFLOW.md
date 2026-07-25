@@ -22,7 +22,9 @@ flowchart TD
     POL -- passed, or nothing left to auto-fix --> GATE{{4. 🛑 HUMAN APPROVAL GATE\nplan + IaC diff + policy findings shown in UI\nLangGraph interrupt}}
 
     GATE -- ❌ rejected / edited --> PLN
-    GATE -- ✅ approved --> DEP[5. Deploy Agent\nexecutes ONLY vetted commands:\ndocker compose up / terraform apply\nstreams logs to UI]
+    GATE -- ✅ approved --> BLD{4b. Build\nno LLM — clone + build from source,\nregistered repos only, hard allow-listed}
+    BLD -- build failed --> RB
+    BLD -- built --> DEP[5. Deploy Agent\nexecutes ONLY vetted commands:\ndocker compose up / terraform apply\nstreams logs to UI]
 
     DEP -- deploy failed --> RB[6b. Rollback\ncompose down / terraform destroy\nrestore previous state]
     DEP -- deployed --> VER[6. Verify Agent\nhealth checks + k6 smoke test\np95, error-rate thresholds]
@@ -109,12 +111,13 @@ User NL request
 | 3 | `iac_generator` | `CapacityPlan` → `IaCPayload` | ✅ (fills templates) | ❌ |
 | 3b | `policy_validator` | `IaCPayload` → `PolicyReport` | ❌ (deterministic scan) | ❌ |
 | 4 | `approval_gate` | `IaCPayload` + `PolicyReport` → approved/rejected | ❌ (human) | ❌ |
+| 4b | `build` | `IaCPayload.build_steps` → built image, or skipped (null for every non-build template) | ❌ (deterministic executor; the LLM only ever chose a `"__BUILD__:<key>"` sentinel earlier, at `planner`) | ✅ allow-listed only — registered repos/commits only, `nodes/buildRegistry.ts` |
 | 5 | `deploy` | `IaCPayload` → `DeployResult` | ❌ | ✅ allow-listed only |
 | 6 | `verify` | `DeployResult` → `VerifyReport` | ✅ (summarise) | ✅ k6 + health only |
 | 6b | `rollback` | any failure → restored state | ❌ | ✅ allow-listed only |
 | 7 | `report` | all state → final report | ✅ (narrative) | ❌ |
 
-**Conditional edges:** `intake→refuse` (infeasible), `readiness_check→refuse` (not ready — port conflict, docker daemon down, low disk, unsupported topology), `policy_validator→iac_generator` (unresolved, auto-fixable finding — capped at 2 retries), `gate→planner` (rejected), `deploy→rollback` (non-zero exit), `verify→rollback` (red verdict).
+**Conditional edges:** `intake→refuse` (infeasible), `readiness_check→refuse` (not ready — port conflict, docker daemon down, low disk, unsupported topology), `policy_validator→iac_generator` (unresolved, auto-fixable finding — capped at 2 retries), `gate→planner` (rejected), `build→rollback` (non-zero exit — not in the original agent set, see README.md's "sixth addition"), `deploy→rollback` (non-zero exit), `verify→rollback` (red verdict).
 
 ## The two safety rules (repeat these to judges)
 

@@ -1,4 +1,25 @@
 import { spawn } from "node:child_process";
+import { BUILD_REGISTRY } from "./buildRegistry.js";
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** git clone/checkout rules, one pair per BUILD_REGISTRY entry — generated from the registry so the set of clonable repos/commits is always exactly what's in that one hardcoded table, never a freeform URL pattern. */
+function buildRegistryRules(): { re: RegExp; argv: (m: RegExpMatchArray) => string[] }[] {
+  const rules: { re: RegExp; argv: (m: RegExpMatchArray) => string[] }[] = [];
+  for (const entry of Object.values(BUILD_REGISTRY)) {
+    rules.push({
+      re: new RegExp(`^git clone ${escapeRegex(entry.repoUrl)} repo$`),
+      argv: () => ["clone", entry.repoUrl, "repo"],
+    });
+    rules.push({
+      re: new RegExp(`^git checkout ${escapeRegex(entry.commitSha)}$`),
+      argv: () => ["checkout", entry.commitSha],
+    });
+  }
+  return rules;
+}
 
 /**
  * Hard-coded allow-list (05-deploy-agent.md). Docker-compose commands, plus
@@ -7,11 +28,23 @@ import { spawn } from "node:child_process";
  * touches a real AWS account, only ever produces a plan. Anything that
  * doesn't match one of these exact shapes is refused before a single
  * process is spawned; there is no free-text command path.
+ *
+ * The git/npm/docker-build rules below exist only for the build-sentinel
+ * path (nodes/buildRegistry.ts, nodes/build.ts) — npm ci/build/prisma are
+ * fixed literal strings (identical regardless of which registry entry is
+ * building), `docker build`'s tag is pinned to a `-app:<hex>` shape so
+ * `:latest` can never match, and the git rules are generated from the
+ * registry table itself (see buildRegistryRules above) rather than
+ * accepting any URL that merely looks well-formed.
  */
 const ALLOWED: { re: RegExp; argv: (m: RegExpMatchArray) => string[] }[] = [
   {
     re: /^docker compose -p ([a-z0-9][a-z0-9_.-]*) up -d --wait$/,
     argv: (m) => ["compose", "-p", m[1], "up", "-d", "--wait"],
+  },
+  {
+    re: /^docker compose -p ([a-z0-9][a-z0-9_.-]*) up -d --wait ([a-z0-9][a-z0-9_.-]*)$/,
+    argv: (m) => ["compose", "-p", m[1], "up", "-d", "--wait", m[2]],
   },
   {
     re: /^docker compose -p ([a-z0-9][a-z0-9_.-]*) down -v$/,
@@ -32,6 +65,14 @@ const ALLOWED: { re: RegExp; argv: (m: RegExpMatchArray) => string[] }[] = [
   {
     re: /^terraform plan -input=false -no-color -out=tfplan$/,
     argv: () => ["plan", "-input=false", "-no-color", "-out=tfplan"],
+  },
+  ...buildRegistryRules(),
+  { re: /^npm ci$/, argv: () => ["ci"] },
+  { re: /^npm run build$/, argv: () => ["run", "build"] },
+  { re: /^npx prisma migrate deploy$/, argv: () => ["prisma", "migrate", "deploy"] },
+  {
+    re: /^docker build -t ([a-z0-9][a-z0-9_.-]*-app:[0-9a-f]{6,40}) \.$/,
+    argv: (m) => ["build", "-t", m[1], "."],
   },
 ];
 
@@ -57,6 +98,13 @@ function scrubbedEnv(): NodeJS.ProcessEnv {
     "DOCKER_HOST",
     "ProgramData",
     "ProgramFiles",
+    // Whatever TLS trust settings this server process itself runs with (e.g.
+    // --use-system-ca on a machine behind a TLS-inspecting proxy — see
+    // start-app.ps1) must also reach spawned Node-based tools (npm/npx) or
+    // their own registry/network calls fail with SELF_SIGNED_CERT_IN_CHAIN
+    // even though the server's own outbound calls work fine. Harmless for
+    // non-Node binaries (git/docker/terraform just ignore it).
+    "NODE_OPTIONS",
   ];
   const env: NodeJS.ProcessEnv = {};
   for (const k of keep) if (process.env[k] !== undefined) env[k] = process.env[k];
@@ -72,18 +120,23 @@ export interface ExecOutcome {
  * Runs an already-allow-listed argv via spawn — never shell:true, never a
  * string command line — with cwd pinned to the deployment dir, a scrubbed
  * env, and a hard timeout. Streams stdout/stderr line-by-line to `onLog`.
+ * `extraEnv` merges on top of the scrubbed env for this one call only (e.g.
+ * DATABASE_URL for a migration step) — never used to widen what env vars a
+ * command can read in general, just to hand this specific spawn a value it
+ * needs.
  */
 export function runAllowedCommand(
   cmd: string,
   argv: string[],
   cwd: string,
   onLog: (line: string) => void,
-  timeoutMs = 180_000
+  timeoutMs = 180_000,
+  extraEnv: NodeJS.ProcessEnv = {}
 ): Promise<ExecOutcome> {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(cmd, argv, { cwd, env: scrubbedEnv(), shell: false, timeout: timeoutMs });
+      child = spawn(cmd, argv, { cwd, env: { ...scrubbedEnv(), ...extraEnv }, shell: false, timeout: timeoutMs });
     } catch (err) {
       resolve({ ok: false, output: err instanceof Error ? err.message : String(err) });
       return;

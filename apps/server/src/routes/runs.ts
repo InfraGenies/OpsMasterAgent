@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { DecisionActionSchema } from "@ops-master/shared";
 import type {
   CapacityPlan,
   ComplianceReport,
@@ -80,10 +81,14 @@ runsRouter.get("/:id/audit", async (req, res, next) => {
 
 runsRouter.post("/:id/decision", async (req, res, next) => {
   try {
-    const action = req.body?.action;
-    if (!["approve", "reject", "edit", "accept_plan"].includes(action)) {
-      throw new HttpError(400, `action must be approve|reject|edit|accept_plan, got "${action}"`);
+    const actionParsed = DecisionActionSchema.safeParse(req.body?.action);
+    if (!actionParsed.success) {
+      throw new HttpError(
+        400,
+        `action must be one of ${DecisionActionSchema.options.join("|")}, got "${req.body?.action}"`
+      );
     }
+    const action = actionParsed.data;
     const comment = typeof req.body?.comment === "string" ? req.body.comment : null;
     const actor = typeof req.body?.actor === "string" && req.body.actor.trim() ? req.body.actor : "operator";
     const capacityPlanPatch =

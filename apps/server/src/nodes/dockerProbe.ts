@@ -30,3 +30,31 @@ export async function shouldMockDeploy(): Promise<boolean> {
   if (env.MOCK_DEPLOY === "false") return false;
   return !(await isDockerAvailable());
 }
+
+let gitAvailable: boolean | null = null;
+
+/** One cached `git --version` probe per process lifetime. */
+export async function isGitAvailable(): Promise<boolean> {
+  if (gitAvailable !== null) return gitAvailable;
+  try {
+    await execFileAsync("git", ["--version"], { timeout: 10000 });
+    gitAvailable = true;
+  } catch {
+    gitAvailable = false;
+  }
+  return gitAvailable;
+}
+
+/**
+ * Deliberately separate from shouldMockDeploy(): that gate is shared by
+ * every existing use case's deploy/rollback/verify, so folding a git-missing
+ * check into it would silently start simulating every other use case's
+ * deploy on any machine that has Docker but not git — a regression unrelated
+ * to the build-sentinel feature this gate exists for. Only nodes/build.ts
+ * reads this.
+ */
+export async function shouldMockBuild(): Promise<boolean> {
+  if (env.MOCK_DEPLOY === "true") return true;
+  if (env.MOCK_DEPLOY === "false") return false;
+  return !(await isDockerAvailable()) || !(await isGitAvailable());
+}

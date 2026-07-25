@@ -9,6 +9,7 @@ const STEPS: { key: NodeName; label: string }[] = [
   { key: "iac_generator", label: "IaC Generator" },
   { key: "policy_validator", label: "Policy & Security" },
   { key: "approval_gate", label: "Approval Gate" },
+  { key: "build", label: "Build" },
   { key: "deploy", label: "Deploy" },
   { key: "verify", label: "Verify" },
   { key: "rollback", label: "Rollback" },
@@ -46,8 +47,20 @@ export function PipelineStepper({ events }: { events: AuditEvent[] }) {
   // same way the branch-only rollback/refuse steps are, rather than always
   // showing a permanently-idle step for every non-enterprise run.
   const hasCompliance = events.some((e) => e.node === "compliance_check");
+  // Build-sentinel path only (nodes/buildRegistry.ts) — no "build" audit
+  // event exists for any template that doesn't clone/build from source, so
+  // this step is filtered out the same way compliance_check already is.
+  const hasBuild = events.some((e) => e.node === "build");
   const steps = STEPS.filter((s) =>
-    s.key === "rollback" ? hasRollback : s.key === "refuse" ? hasRefuse : s.key === "compliance_check" ? hasCompliance : true
+    s.key === "rollback"
+      ? hasRollback
+      : s.key === "refuse"
+        ? hasRefuse
+        : s.key === "compliance_check"
+          ? hasCompliance
+          : s.key === "build"
+            ? hasBuild
+            : true
   );
 
   return (

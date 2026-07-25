@@ -18,12 +18,20 @@ export const env = {
   MOCK_LLM: bool(process.env.MOCK_LLM, false),
 
   // "auto" (default): use the first configured provider below (Anthropic,
-  // then Kiro). "anthropic"/"kiro" forces one — falls back to mock if that
-  // provider's credentials aren't set. See llm/client.ts: resolveProvider.
+  // then Bedrock, then Kiro). "anthropic"/"bedrock"/"kiro" forces one — falls
+  // back to mock if that provider's credentials aren't set. See
+  // llm/client.ts: resolveProvider.
   LLM_PROVIDER: (process.env.LLM_PROVIDER ?? "auto").toLowerCase(),
   KIRO_API_KEY: process.env.KIRO_API_KEY ?? "",
   KIRO_API_BASE_URL: process.env.KIRO_API_BASE_URL ?? "",
   KIRO_MODEL: process.env.KIRO_MODEL ?? "",
+
+  // Amazon Bedrock — calls Anthropic models via Bedrock's native Converse API
+  // using an AWS Bedrock API key (bearer token), not SigV4. See
+  // llm/providers/bedrockProvider.ts.
+  AWS_BEARER_TOKEN_BEDROCK: process.env.AWS_BEARER_TOKEN_BEDROCK ?? "",
+  AWS_REGION: process.env.AWS_REGION ?? "us-east-1",
+  BEDROCK_MODEL_ID: process.env.BEDROCK_MODEL_ID ?? "",
 
   SUPABASE_URL: process.env.SUPABASE_URL ?? "",
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",

@@ -125,7 +125,12 @@ async function main() {
 
       console.log("\napproving deployment...");
       await submitDecision(uc1, "approve", null, "smoke-test");
-      const finalStatus = await waitForStatus(uc1, ["deployed", "failed", "rolled_back"], 60000);
+      // UC-1's app service now uses the build-sentinel path (real git clone +
+      // npm ci + nx build + docker build + migrate, nodes/buildRegistry.ts)
+      // regardless of MOCK_LLM — only planning is mocked, not the build/deploy
+      // — so this realistically takes several minutes, not the 60s every
+      // other (image-pull-only) deploy needs.
+      const finalStatus = await waitForStatus(uc1, ["deployed", "failed", "rolled_back"], 480000);
       console.log(`final status: ${finalStatus} (docker likely absent in this sandbox -> rolled_back is expected here)`);
 
       const events = await store.listAuditEvents(uc1);
@@ -180,7 +185,10 @@ async function main() {
     "We are launching a payment platform. Expected 8 million users. PCI-DSS compliant. Multi-region DR. RPO < 5 min. RTO < 15 min.",
     null
   );
-  const uc10Gate = await waitForStatus(uc10, ["awaiting_plan_approval", "refused", "failed"]);
+  // Enterprise-mode outputs (architecture_recommendation) are large enough that
+  // real LLM calls routinely take 150-220s+, well past waitForStatus's 120s
+  // default — this isn't a hang, just a bigger generation than every other UC.
+  const uc10Gate = await waitForStatus(uc10, ["awaiting_plan_approval", "refused", "failed"], 240000);
   console.log(`reached: ${uc10Gate} (expected: awaiting_plan_approval)`);
   if (uc10Gate === "awaiting_plan_approval") {
     const store = getStore();
@@ -189,7 +197,7 @@ async function main() {
     const rec = plan?.architecture_recommendation;
     console.log(`enterprise_mode: ${planRequest?.enterprise_mode} (expected: true)`);
     console.log(
-      `criticality: ${rec?.criticality_score}/14 -> ${rec?.criticality_band} (expected: 14/14 -> very_high); org_scale: ${rec?.enterprise_context.org_scale} (expected: solo — team size unstated)`
+      `criticality: ${rec?.criticality_score}/14 -> ${rec?.criticality_band} (expected: 14/14 -> very_high); org_scale: ${rec?.enterprise_context?.org_scale} (expected: solo — team size unstated)`
     );
     const controlNames = rec?.managed_controls.map((c) => c.name) ?? [];
     console.log(
@@ -201,26 +209,26 @@ async function main() {
 
   console.log("\n=== Enterprise Architecture Advisor: UC-11a 2-developer MVP (solo, low) ===");
   const uc11a = await startRun("We are 2 developers building an MVP.", null);
-  const uc11aGate = await waitForStatus(uc11a, ["awaiting_plan_approval", "refused", "failed"]);
+  const uc11aGate = await waitForStatus(uc11a, ["awaiting_plan_approval", "refused", "failed"], 240000);
   console.log(`reached: ${uc11aGate} (expected: awaiting_plan_approval)`);
   if (uc11aGate === "awaiting_plan_approval") {
     const plan = await loadLatestNodeOutput<CapacityPlan>(getStore(), uc11a, "planner");
     const rec = plan?.architecture_recommendation;
     console.log(
-      `org_scale: ${rec?.enterprise_context.org_scale} (expected: solo), archetype: ${rec?.archetype} (expected: solo_ecs_fargate), criticality_band: ${rec?.criticality_band} (expected: low)`
+      `org_scale: ${rec?.enterprise_context?.org_scale} (expected: solo), archetype: ${rec?.archetype} (expected: solo_ecs_fargate), criticality_band: ${rec?.criticality_band} (expected: low)`
     );
   }
 
   console.log("\n=== Enterprise Architecture Advisor: UC-11b rescale to 500 developers (new create, not modify) ===");
   const uc11b = await startRun("We now have 500 developers across 20 teams.", null);
-  const uc11bGate = await waitForStatus(uc11b, ["awaiting_plan_approval", "refused", "failed"]);
+  const uc11bGate = await waitForStatus(uc11b, ["awaiting_plan_approval", "refused", "failed"], 240000);
   console.log(`reached: ${uc11bGate} (expected: awaiting_plan_approval)`);
   if (uc11bGate === "awaiting_plan_approval") {
     const store = getStore();
     const plan = await loadLatestNodeOutput<CapacityPlan>(store, uc11b, "planner");
     const rec = plan?.architecture_recommendation;
     console.log(
-      `org_scale: ${rec?.enterprise_context.org_scale} (expected: enterprise), archetype: ${rec?.archetype} (expected: enterprise_eks_landing_zone), criticality_band: ${rec?.criticality_band} (expected: low — unchanged from UC-11a, proving axis independence)`
+      `org_scale: ${rec?.enterprise_context?.org_scale} (expected: enterprise), archetype: ${rec?.archetype} (expected: enterprise_eks_landing_zone), criticality_band: ${rec?.criticality_band} (expected: low — unchanged from UC-11a, proving axis independence)`
     );
     const uc11aRun = await store.getRun(uc11a);
     const uc11bRun = await store.getRun(uc11b);
@@ -231,14 +239,14 @@ async function main() {
 
   console.log("\n=== Enterprise Architecture Advisor: UC-12 generalization scenario (HIPAA healthcare startup, not a canned example) ===");
   const uc12 = await startRun("HIPAA healthcare startup, 5 developers, single-region.", null);
-  const uc12Gate = await waitForStatus(uc12, ["awaiting_plan_approval", "refused", "failed"]);
+  const uc12Gate = await waitForStatus(uc12, ["awaiting_plan_approval", "refused", "failed"], 240000);
   console.log(`reached: ${uc12Gate} (expected: awaiting_plan_approval)`);
   if (uc12Gate === "awaiting_plan_approval") {
     const store = getStore();
     const plan = await loadLatestNodeOutput<CapacityPlan>(store, uc12, "planner");
     const rec = plan?.architecture_recommendation;
     console.log(
-      `org_scale: ${rec?.enterprise_context.org_scale} (expected: team), criticality: ${rec?.criticality_score}/14 -> ${rec?.criticality_band} (expected: 6/14 -> medium)`
+      `org_scale: ${rec?.enterprise_context?.org_scale} (expected: team), criticality: ${rec?.criticality_score}/14 -> ${rec?.criticality_band} (expected: 6/14 -> medium)`
     );
     const compliance = await loadLatestNodeOutput<ComplianceReport>(store, uc12, "compliance_check");
     console.log(`compliance frameworks: ${compliance?.frameworks.join(", ")} (expected: hipaa)`);

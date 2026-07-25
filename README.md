@@ -182,6 +182,28 @@ less. `apply_command`/`rollback_command` are still never produced by the LLM in 
 generically from `format` + project name, matching the exact literal strings `commandAllowList.ts` already
 expects, so no allow-list change was needed.
 
+A sixth addition: a **`build` node** (`apps/server/src/nodes/build.ts`, run from
+`orchestrator/pipeline.ts: runDeployThroughReport` between Gate 2 approval and `deploy`) that clones and
+builds a real application from source for UC-1's flagship request, instead of the placeholder runtime
+image every other compose template uses (`node:18-alpine` with no app code — deployable, but not the
+credible reference API UC-1 is meant to demonstrate). Security follows the same discipline as
+`commandAllowList.ts`'s existing hard allow-list: the planner can only ever emit a `"__BUILD__:<key>"`
+sentinel for a service's `image` (mirroring the existing `"__GENERATE__"` secret sentinel in
+`templates/secrets.ts`) — never a real repo URL — and `nodes/buildRegistry.ts` is the sole, hardcoded,
+developer-reviewed table mapping that sentinel to an actual repo pinned to an exact commit (never a
+floating branch), with `commandAllowList.ts` deriving its git-clone/checkout rules directly from that
+table. Getting the RealWorld Node/Express/Prisma reference app (`gothinkster/node-express-realworld-example-app`)
+actually running took three separate, non-obvious fixes layered on top of the repo's own Dockerfile,
+documented in full in `buildRegistry.ts`'s `dockerfileOverride` doc comment: `prisma generate` has to run
+inside the same Linux/musl target the engine binary will actually execute on (not the build host); Prisma's
+own platform auto-detection is unreliable on this Alpine base and has to be forced via a schema-level
+`binaryTargets` patch; and the *client's* runtime engine selection is separately broken the same way,
+requiring `PRISMA_QUERY_ENGINE_LIBRARY` to bypass auto-detection entirely at the container level. Confirmed
+by manually running the built image standalone until `/api/tags` returned `{"tags":[]}`, then via a full
+live pipeline run reaching `deployed` with a green `verify` report. This only ever runs for the one
+registered sentinel; every other use case's `IaCPayload.build_steps` stays `null`, and behavior for them is
+unchanged.
+
 ## Where each spec agent lives in code
 
 | Spec file | Code |
@@ -193,6 +215,7 @@ expects, so no allow-list change was needed.
 | `03-iac-generator.md` | `apps/server/src/nodes/iacGenerator.ts`, templates in `templates/catalog.ts`, prompt at `prompts/03-iac-generator.md`, skills at `skills/{writing-compose-iac,writing-terraform-iac,novel-requirement-reasoning}.md` |
 | `03b-policy-validator.md` | `apps/server/src/nodes/policyValidator.ts` (deterministic, no prompt file — no LLM call), self-correction loop lives in `orchestrator/pipeline.ts: reachApprovalGate`, UI: `web/src/components/PolicyReportView.tsx` |
 | `04-approval-gate.md` | `orchestrator/pipeline.ts` (`reachPlanApprovalGate` = Gate 1, `reachApprovalGate` = Gate 2, `submitDecision`, timeout), UI: `web/src/components/PlanApprovalGate.tsx` (Gate 1), `ApprovalGate.tsx` (Gate 2) |
+| *(not in spec — see "sixth addition" above)* | `apps/server/src/nodes/build.ts` + `buildRegistry.ts` (deterministic, no prompt file — no LLM call beyond the planner's sentinel choice), wired into `orchestrator/pipeline.ts: runDeployThroughReport` right before `deploy` |
 | `05-deploy-agent.md` | `apps/server/src/nodes/deploy.ts`, `commandAllowList.ts` |
 | `06-verify-agent.md` | `apps/server/src/nodes/verify.ts` |
 | `07-audit-store.md` | `apps/server/src/store/*`, `supabase/schema.sql`, UI: `web/src/components/AuditTimeline.tsx` |

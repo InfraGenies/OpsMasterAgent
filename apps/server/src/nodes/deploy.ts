@@ -6,6 +6,8 @@ export interface DeployInput {
   payload: IaCPayload;
   deploymentDir: string;
   onLog: (line: string) => void;
+  /** Set by the orchestrator when the preceding build step was mocked (nodes/build.ts) — forces deploy to mock too, so a simulated build (image never actually built) can't be followed by a for-real `docker compose up` that would just fail against a nonexistent image. Undefined defers to the normal shouldMockDeploy() gate. */
+  mockOverride?: boolean;
 }
 
 export interface DeployOutcome {
@@ -70,7 +72,7 @@ export async function runDeploy(input: DeployInput): Promise<DeployOutcome> {
     };
   }
 
-  if (await shouldMockDeploy()) {
+  if (input.mockOverride ?? (await shouldMockDeploy())) {
     // Allow-list check above still ran — mock mode never skips the safety
     // gate, only the process spawn.
     input.onLog(`[mock deploy] docker CLI unavailable — simulating: ${input.payload.apply_command}`);

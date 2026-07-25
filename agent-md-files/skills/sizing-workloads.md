@@ -20,6 +20,16 @@ Sizing rules (do not deviate — cite the rule you used in "reasoning"):
 - Redis: 1 instance, 256Mi, no volume unless persistence requested.
 - Nginx LB: add automatically when replicas > 1 for an HTTP service. 128Mi.
 - Static site: nginx:alpine, 128Mi, 1 replica.
+- Generic demo request with no repo/build given (e.g. "simple todo app", "hello world", UC-2-style
+  warm-up): the app container must actually serve traffic on the stated port. A bare language runtime
+  base image (node:*, python:*, etc.) has no server process and will fail its health check — use
+  docker/welcome-to-docker instead (serves HTTP on port 80 out of the box). 128Mi, 1 replica floor.
+- Node.js API + PostgreSQL request with no repo/build given (UC-1 flagship): same "no real app code"
+  problem, but this scenario is meant to prove capacity planning against a credible reference API, not
+  a placeholder. Set the app service's image to the literal sentinel "__BUILD__:realworld-node-express"
+  (nothing else — never invent a different "__BUILD__:*" key, a real image, or a repo URL yourself; the
+  backend resolves this one exact string to a real, pinned build). Do not use this for a request that
+  already gives its own repo_url.
 
 Tier rules:
 - economy: headroom_pct=0, size to the exact stated load (replica floor 1, min 1 max 4).

@@ -168,6 +168,18 @@ payload is flagged distinctly in the UI (`template_id === "freeform"`) so a huma
 produced by a pre-validated rendering path. For `modify` operations, `diff_from` holds the previous env's
 files and the UI renders a diff.
 
+**Second divergence from the original spec**: four more fields, all optional/defaulted so every
+non-build template's payload is unaffected — `build_steps` (an ordered list of `{command, cwd, env?}`,
+populated only on the build-sentinel path, `nodes/buildRegistry.ts`/`nodes/build.ts` — not in the original
+agent set, see the README's "sixth addition"), `resolved_images` (service name → the locally-built image
+tag that `build_steps` actually produced, so environment snapshots reflect what's really running instead of
+the planner's `"__BUILD__:<key>"` sentinel), `dockerfile_override` (a full Dockerfile string the `build`
+node writes into the cloned repo before `docker build`, when the repo's own Dockerfile doesn't work as-is —
+see `buildRegistry.ts`'s doc comment for exactly why UC-1's needs one), and `health_path` (the HTTP path
+`verify` checks — was previously hardcoded to `"/"` regardless of what a template actually serves; now
+threaded through from the `variables.health_path` every template already accepted, benefiting every
+existing use case, not just the build path).
+
 ## 3b. PolicyReport  (iac_generator ⇄ policy_validator self-correction loop, then → approval gate)
 
 Not in the original agent set — see `03b-policy-validator.md` for why and how this fits in.

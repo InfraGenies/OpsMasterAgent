@@ -1,14 +1,15 @@
 import { env } from "../config.js";
 import { anthropicProvider } from "./providers/anthropicProvider.js";
+import { bedrockProvider } from "./providers/bedrockProvider.js";
 import { kiroProvider } from "./providers/kiroProvider.js";
 import type { LLMProvider } from "./providers/types.js";
 
 // Order matters for "auto": first configured provider wins. Anthropic first
-// (primary), Kiro as the fallback once its credentials are supplied.
-const providers: LLMProvider[] = [anthropicProvider, kiroProvider];
+// (primary), then Bedrock, then Kiro as the final fallback.
+const providers: LLMProvider[] = [anthropicProvider, bedrockProvider, kiroProvider];
 
 /** LLM_PROVIDER=auto (default) picks the first configured provider above;
- * anthropic|kiro forces one and falls back to mock if it isn't configured. */
+ * anthropic|bedrock|kiro forces one and falls back to mock if it isn't configured. */
 function resolveProvider(): LLMProvider | undefined {
   if (env.LLM_PROVIDER !== "auto") {
     const forced = providers.find((p) => p.name === env.LLM_PROVIDER);

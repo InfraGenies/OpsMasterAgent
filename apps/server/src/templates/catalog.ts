@@ -110,6 +110,12 @@ const composeWebDbV1: TemplateDefinition = {
 
     const isPg = db.image.startsWith("postgres");
     const dbPort = db.ports[0] ?? (isPg ? 5432 : 3306);
+    // Only published when the plan explicitly asks for it (network.expose
+    // carrying an entry for the db service name) — every existing plan
+    // leaves the db unexposed to the host, as before. The build-sentinel
+    // path (nodes/planner.ts) is what sets this, since its migration step
+    // runs as a host process and needs to reach Postgres directly.
+    const dbExpose = plan.network.expose.find((e) => e.service === db.name);
     const storageName = plan.storage[0]?.name ?? "dbdata";
     const dataPath = isPg ? "/var/lib/postgresql/data" : "/var/lib/mysql";
     const databaseUrl = isPg
@@ -130,6 +136,7 @@ const composeWebDbV1: TemplateDefinition = {
         },
         [db.name]: {
           image: db.image,
+          ports: dbExpose ? [`${dbExpose.host_port}:${dbPort}`] : undefined,
           restart: "unless-stopped",
           environment: isPg
             ? { POSTGRES_DB: dbName, POSTGRES_USER: dbUser, POSTGRES_PASSWORD: dbPassword }
@@ -182,6 +189,7 @@ const composeWebDbCacheV1: TemplateDefinition = {
 
     const isPg = db.image.startsWith("postgres");
     const dbPort = db.ports[0] ?? (isPg ? 5432 : 3306);
+    const dbExpose = plan.network.expose.find((e) => e.service === db.name);
     const storageName = plan.storage[0]?.name ?? "dbdata";
     const dataPath = isPg ? "/var/lib/postgresql/data" : "/var/lib/mysql";
     const cachePort = cache.ports[0] ?? 6379;
@@ -206,6 +214,7 @@ const composeWebDbCacheV1: TemplateDefinition = {
         },
         [db.name]: {
           image: db.image,
+          ports: dbExpose ? [`${dbExpose.host_port}:${dbPort}`] : undefined,
           restart: "unless-stopped",
           environment: isPg
             ? { POSTGRES_DB: dbName, POSTGRES_USER: dbUser, POSTGRES_PASSWORD: dbPassword }
