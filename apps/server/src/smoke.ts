@@ -186,9 +186,10 @@ async function main() {
     null
   );
   // Enterprise-mode outputs (architecture_recommendation) are large enough that
-  // real LLM calls routinely take 150-220s+, well past waitForStatus's 120s
-  // default — this isn't a hang, just a bigger generation than every other UC.
-  const uc10Gate = await waitForStatus(uc10, ["awaiting_plan_approval", "refused", "failed"], 240000);
+  // real LLM calls routinely take 150-220s+ against Anthropic direct, and
+  // observed higher still against Bedrock — well past waitForStatus's 120s
+  // default. This isn't a hang, just a bigger generation than every other UC.
+  const uc10Gate = await waitForStatus(uc10, ["awaiting_plan_approval", "refused", "failed"], 400000);
   console.log(`reached: ${uc10Gate} (expected: awaiting_plan_approval)`);
   if (uc10Gate === "awaiting_plan_approval") {
     const store = getStore();
@@ -205,11 +206,15 @@ async function main() {
     );
     const compliance = await loadLatestNodeOutput<ComplianceReport>(store, uc10, "compliance_check");
     console.log(`compliance frameworks: ${compliance?.frameworks.join(", ")} (expected: pci_dss), passed: ${compliance?.passed} (expected: true)`);
+    const tiers = plan?.options.map((o) => o.tier) ?? [];
+    console.log(
+      `enterprise options: ${plan?.options.length} tier(s) [${tiers.join(", ")}] (expected: 2, economy+high_availability), recommended: ${plan?.recommended_tier} (expected: high_availability — very_high criticality)`
+    );
   }
 
   console.log("\n=== Enterprise Architecture Advisor: UC-11a 2-developer MVP (solo, low) ===");
   const uc11a = await startRun("We are 2 developers building an MVP.", null);
-  const uc11aGate = await waitForStatus(uc11a, ["awaiting_plan_approval", "refused", "failed"], 240000);
+  const uc11aGate = await waitForStatus(uc11a, ["awaiting_plan_approval", "refused", "failed"], 400000);
   console.log(`reached: ${uc11aGate} (expected: awaiting_plan_approval)`);
   if (uc11aGate === "awaiting_plan_approval") {
     const plan = await loadLatestNodeOutput<CapacityPlan>(getStore(), uc11a, "planner");
@@ -217,11 +222,14 @@ async function main() {
     console.log(
       `org_scale: ${rec?.enterprise_context?.org_scale} (expected: solo), archetype: ${rec?.archetype} (expected: solo_ecs_fargate), criticality_band: ${rec?.criticality_band} (expected: low)`
     );
+    console.log(
+      `enterprise options: ${plan?.options.length} tier(s) (expected: 2), recommended: ${plan?.recommended_tier} (expected: economy — low criticality)`
+    );
   }
 
   console.log("\n=== Enterprise Architecture Advisor: UC-11b rescale to 500 developers (new create, not modify) ===");
   const uc11b = await startRun("We now have 500 developers across 20 teams.", null);
-  const uc11bGate = await waitForStatus(uc11b, ["awaiting_plan_approval", "refused", "failed"], 240000);
+  const uc11bGate = await waitForStatus(uc11b, ["awaiting_plan_approval", "refused", "failed"], 400000);
   console.log(`reached: ${uc11bGate} (expected: awaiting_plan_approval)`);
   if (uc11bGate === "awaiting_plan_approval") {
     const store = getStore();
@@ -235,11 +243,12 @@ async function main() {
     console.log(
       `distinct request_ids: ${uc11a !== uc11b} (expected: true), both operation=create: ${uc11aRun?.operation === "create" && uc11bRun?.operation === "create"} (expected: true — rescale is a new request, not a modify)`
     );
+    console.log(`enterprise options: ${plan?.options.length} tier(s) (expected: 2), recommended: ${plan?.recommended_tier} (expected: economy — low criticality)`);
   }
 
   console.log("\n=== Enterprise Architecture Advisor: UC-12 generalization scenario (HIPAA healthcare startup, not a canned example) ===");
   const uc12 = await startRun("HIPAA healthcare startup, 5 developers, single-region.", null);
-  const uc12Gate = await waitForStatus(uc12, ["awaiting_plan_approval", "refused", "failed"], 240000);
+  const uc12Gate = await waitForStatus(uc12, ["awaiting_plan_approval", "refused", "failed"], 400000);
   console.log(`reached: ${uc12Gate} (expected: awaiting_plan_approval)`);
   if (uc12Gate === "awaiting_plan_approval") {
     const store = getStore();
@@ -250,6 +259,7 @@ async function main() {
     );
     const compliance = await loadLatestNodeOutput<ComplianceReport>(store, uc12, "compliance_check");
     console.log(`compliance frameworks: ${compliance?.frameworks.join(", ")} (expected: hipaa)`);
+    console.log(`enterprise options: ${plan?.options.length} tier(s) (expected: 2), recommended: ${plan?.recommended_tier} (expected: economy — medium criticality)`);
   }
 
   console.log("\n=== Freeform IaC generation: topology no catalog template covers (Postgres + MongoDB together) ===");

@@ -3,6 +3,7 @@ import type {
   ArchitectureRecommendation,
   CapacityPlanOption,
   ComplianceTarget,
+  ComponentNote,
   CriticalityBand,
   EnterpriseContext,
   ManagedControl,
@@ -10,6 +11,7 @@ import type {
   PlanRequest,
   PlatformArchetype,
   ServiceSpec,
+  TaskGraphStep,
 } from "@ops-master/shared";
 import {
   estimateManagedControlsMonthlyCost,
@@ -197,8 +199,15 @@ export function scoreCriticality(ctx: EnterpriseContext): CriticalityScore {
   return { score, band, factors };
 }
 
-/** Cumulative by band: medium ⊂ high ⊂ very_high — a higher band never loses a lower band's controls. */
-function criticalityControls(band: CriticalityBand): ManagedControl[] {
+/**
+ * Cumulative by band: medium ⊂ high ⊂ very_high — a higher band never loses a lower band's controls.
+ * `capAtHigh` treats a `very_high` band as `high` for control-selection purposes only — used to build
+ * the "economy" priced tier's discretionary DR/HA posture (Shield Advanced / Aurora Global Database /
+ * Route 53 failover are the only genuinely optional-for-cost controls; everything below `very_high`
+ * is the same either way, and compliance-overlay/archetype controls are never affected by this flag).
+ */
+function criticalityControls(band: CriticalityBand, capAtHigh = false): ManagedControl[] {
+  const effectiveBand = capAtHigh && band === "very_high" ? "high" : band;
   const medium: ManagedControl[] = [
     criticalityControl(
       "AWS Backup",
@@ -274,7 +283,7 @@ function criticalityControls(band: CriticalityBand): ManagedControl[] {
     ),
   ];
 
-  switch (band) {
+  switch (effectiveBand) {
     case "low":
       return [];
     case "medium":
@@ -486,14 +495,23 @@ function deriveClientClassification(ctx: EnterpriseContext, band: CriticalityBan
 // Composition
 // ---------------------------------------------------------------------------
 
-/** Combines all three axes into one deduplicated, priced list. A control required by more than one axis appears once — compliance wins ties as the strictest justification, but tags/reasoning from every contributing axis are preserved. */
-export function buildArchitectureRecommendation(ctx: EnterpriseContext): ArchitectureRecommendation {
+/**
+ * Combines all three axes into one deduplicated, priced list. A control required by more than one axis
+ * appears once — compliance wins ties as the strictest justification, but tags/reasoning from every
+ * contributing axis are preserved.
+ *
+ * `capAtHigh` (default false) is used internally by `buildEnterpriseOptions` to compute the "economy"
+ * priced tier's own (lighter) control list — it never affects the single per-request
+ * `CapacityPlan.architecture_recommendation`, which always reflects the full, uncapped recommendation
+ * regardless of which tier a human ends up choosing.
+ */
+export function buildArchitectureRecommendation(ctx: EnterpriseContext, capAtHigh = false): ArchitectureRecommendation {
   const archetype = archetypeForOrgScale(ctx.org_scale);
   const { score, band, factors } = scoreCriticality(ctx);
 
   const combined = [
     ...archetypeManagedControls(archetype),
-    ...criticalityControls(band),
+    ...criticalityControls(band, capAtHigh),
     ...complianceOverlayControls(ctx.compliance_targets),
   ];
 
@@ -559,26 +577,31 @@ const AVAILABILITY_NOTES_BY_BAND: Record<CriticalityBand, string> = {
   low: "No redundancy beyond the platform archetype's own defaults — acceptable for this criticality level.",
 };
 
-export function buildEnterpriseOptions(planRequest: PlanRequest, humanFeedback?: string): CapacityPlanOption[] {
-  const ctx = planRequest.enterprise_context;
-  if (!ctx) {
-    throw new Error(
-      "buildEnterpriseOptions called without enterprise_context — planner.ts must only reach this branch when enterprise_mode is true."
-    );
-  }
-  const recommendation = buildArchitectureRecommendation(ctx);
-  const computeSpec = COMPUTE_SPEC_BY_ARCHETYPE[recommendation.archetype];
-  const dbMultiAz = recommendation.criticality_band === "high" || recommendation.criticality_band === "very_high";
-
+/**
+ * Builds one priced CapacityPlanOption for the Enterprise Architecture Advisor. `rec` carries whichever
+ * (capped-for-economy or full-for-HA) managed_controls list applies to this tier — the caller
+ * (buildEnterpriseOptions) decides that, this function just prices and narrates it.
+ */
+function buildOneEnterpriseOption(
+  ctx: EnterpriseContext,
+  computeSpec: { cpu: string; memory: string; replicas: number },
+  archetype: PlatformArchetype,
+  rec: ArchitectureRecommendation,
+  tier: "economy" | "high_availability",
+  dbMultiAz: boolean,
+  droppedControls: ManagedControl[],
+  availabilityNotes: string,
+  humanFeedback?: string
+): CapacityPlanOption {
   // Every real business workload needs a data store — previously missing
   // entirely from this estimate, which made the total look implausibly low
   // (compute + security/compliance add-ons, but no actual database or
-  // networking cost). Sized by criticality band, same single-AZ vs. Multi-AZ
+  // networking cost). Sized by tier's dbMultiAz, same single-AZ vs. Multi-AZ
   // split every other tier in this codebase already uses.
   const services: ServiceSpec[] = [
     {
       name: "app",
-      image: `illustrative ${recommendation.archetype.replace(/_/g, "-")} workload — no concrete service topology was described in the request`,
+      image: `illustrative ${archetype.replace(/_/g, "-")} workload — no concrete service topology was described in the request`,
       cpu: computeSpec.cpu,
       memory: computeSpec.memory,
       replicas: computeSpec.replicas,
@@ -597,27 +620,72 @@ export function buildEnterpriseOptions(planRequest: PlanRequest, humanFeedback?:
   ];
 
   const computeCost = estimateMonthlyCost([services[0]], []);
-  const dbCost = estimatePrimaryDatabaseMonthlyCost(recommendation.criticality_band);
-  const networkCost = estimateNetworkingMonthlyCost(recommendation.archetype);
-  const controlsCost = estimateManagedControlsMonthlyCost(recommendation.managed_controls.map((c) => c.name));
+  const dbCost = estimatePrimaryDatabaseMonthlyCost(dbMultiAz ? rec.criticality_band : "low");
+  const networkCost = estimateNetworkingMonthlyCost(archetype);
+  const controlsCost = estimateManagedControlsMonthlyCost(rec.managed_controls.map((c) => c.name));
 
   const feedbackSuffix = humanFeedback
     ? ` Reviewer feedback noted: "${humanFeedback}" — this recommendation is derived deterministically from org scale, criticality, and compliance signals in the business description; adjust the description (e.g. stated team size or compliance target) and resubmit to change it.`
     : "";
 
   const controlsSummary =
-    recommendation.managed_controls.length > 0
-      ? ` Managed controls added: ${recommendation.managed_controls.map((c) => c.name).join(", ")}.`
+    rec.managed_controls.length > 0
+      ? ` Managed controls in this tier: ${rec.managed_controls.map((c) => c.name).join(", ")}.`
       : " No additional managed controls required at this criticality/org-scale combination.";
 
   const dbSummary = ` Primary data store assumed (${dbMultiAz ? "Multi-AZ" : "single-AZ"} RDS/Aurora-compatible) since every real business workload needs one, plus baseline NAT Gateway networking.`;
 
+  // Being explicit when this tier is cheaper because it doesn't meet a real stated requirement — same
+  // honesty UC-9's economy tier already models for staging's lack of an uptime SLA.
+  const complianceCaveat =
+    tier === "economy" && droppedControls.length > 0
+      ? ` This economy tier drops ${droppedControls.map((c) => c.name).join(", ")} to reduce cost` +
+        (ctx.rpo_minutes !== null || ctx.rto_minutes !== null
+          ? ` — it does NOT meet the stated ${ctx.rpo_minutes !== null ? `RPO < ${ctx.rpo_minutes}min` : ""}${ctx.rpo_minutes !== null && ctx.rto_minutes !== null ? "/" : ""}${ctx.rto_minutes !== null ? `RTO < ${ctx.rto_minutes}min` : ""} requirement; choose high_availability if that requirement is real.`
+          : ", trading resilience for lower spend.")
+      : "";
+
   const reasoning =
-    `${recommendation.archetype_reasoning} ${recommendation.criticality_reasoning}${dbSummary}${controlsSummary}` +
+    `${ARCHETYPE_REASONING[archetype]} ${rec.criticality_reasoning}${dbSummary}${controlsSummary}${complianceCaveat}` +
     feedbackSuffix;
 
-  const option: CapacityPlanOption = {
-    tier: "balanced",
+  const included_components: ComponentNote[] = [
+    { component: "app", reason: `illustrative ${archetype.replace(/_/g, "-")} workload for this archetype` },
+    { component: "db", reason: "managed primary data store assumed for any real business workload" },
+    {
+      component: "Load Balancer (ALB, round-robin)",
+      reason: `fronts the app workload's ${computeSpec.replicas} baseline replica(s), alongside the NAT Gateway networking already priced below`,
+    },
+    ...rec.managed_controls.map((c) => ({ component: c.name, reason: c.reasoning })),
+  ];
+  const skipped_components: ComponentNote[] = [
+    ...(dbMultiAz
+      ? []
+      : [
+          {
+            component: "Database Multi-AZ replication",
+            reason:
+              tier === "economy"
+                ? "economy tier — traded off for lower monthly cost, see high_availability tier"
+                : `criticality band "${rec.criticality_band}" does not require multi-AZ failover`,
+          },
+        ]),
+    ...droppedControls.map((c) => ({
+      component: c.name,
+      reason: "economy tier — discretionary DR/HA control dropped to reduce cost; see high_availability tier",
+    })),
+  ];
+
+  const task_graph: TaskGraphStep[] = [
+    { step: 1, task: "Provision network + IAM landing zone", component: "Terraform" },
+    { step: 2, task: "Deploy app workload", component: archetype },
+    { step: 3, task: "Provision primary database (RDS/Aurora-compatible)", component: "RDS" },
+    ...rec.managed_controls.map((c, i) => ({ step: 4 + i, task: `Apply managed control: ${c.name}`, component: c.category })),
+    { step: 4 + rec.managed_controls.length, task: "Validate terraform plan", component: "Validation" },
+  ];
+
+  return {
+    tier,
     services,
     storage: [],
     network: { expose: [], internal: [] },
@@ -629,10 +697,79 @@ export function buildEnterpriseOptions(planRequest: PlanRequest, humanFeedback?:
     cost_breakdown: [...computeCost.breakdown, ...dbCost.breakdown, ...networkCost.breakdown, ...controlsCost.breakdown],
     cost_basis: "rate_table",
     headroom_pct: 0,
-    availability_notes: AVAILABILITY_NOTES_BY_BAND[recommendation.criticality_band],
+    availability_notes: availabilityNotes,
+    included_components,
+    skipped_components,
+    task_graph,
+    // Enterprise landing-zone work (IAM, compliance controls, managed data stores) is the heaviest tier in this codebase — illustrative figures, same basis as the cost estimates above.
+    manual_estimate_person_days: 8 + rec.managed_controls.length * 1.5,
+    agent_estimate_minutes: Math.min(60, 25 + rec.managed_controls.length * 3),
+    scaling_strategy: {
+      min_replicas: computeSpec.replicas,
+      max_replicas: computeSpec.replicas * 2,
+      trigger_description: `scale from the ${archetype} archetype's ${computeSpec.replicas}-replica baseline up to ${computeSpec.replicas * 2} if sustained load exceeds it — no live autoscaler configured in this sandbox, a human would provision the additional capacity manually`,
+    },
   };
+}
 
-  return [option];
+/**
+ * Two priced tiers — "economy" and "high_availability" — mirroring UC-9's AWS pattern instead of a
+ * single recommendation. Confirmed via real usage (see compliance-and-dr-reasoning.md's revision note)
+ * that a single-option output reads as broken to a human reviewer expecting the same cost/capacity
+ * comparison every other request type gets. Compliance-overlay and archetype controls never vary by
+ * tier (not cost levers); only the very-high-band-exclusive DR/HA controls and DB Multi-AZ do.
+ */
+export function buildEnterpriseOptions(planRequest: PlanRequest, humanFeedback?: string): CapacityPlanOption[] {
+  const ctx = planRequest.enterprise_context;
+  if (!ctx) {
+    throw new Error(
+      "buildEnterpriseOptions called without enterprise_context — planner.ts must only reach this branch when enterprise_mode is true."
+    );
+  }
+  const archetype = archetypeForOrgScale(ctx.org_scale);
+  const computeSpec = COMPUTE_SPEC_BY_ARCHETYPE[archetype];
+
+  // Uncapped — this exact object also becomes CapacityPlan.architecture_recommendation (planner.ts),
+  // so it always reflects the full recommendation regardless of which tier a human picks.
+  const fullRecommendation = buildArchitectureRecommendation(ctx);
+  // Capped at "high" band for control selection — used only to price/narrate the economy tier's own
+  // CapacityPlanOption, never exposed as a separate architecture_recommendation.
+  const economyRecommendation = buildArchitectureRecommendation(ctx, true);
+
+  const droppedControls = fullRecommendation.managed_controls.filter(
+    (c) => !economyRecommendation.managed_controls.some((ec) => ec.name === c.name)
+  );
+  const haDbMultiAz = fullRecommendation.criticality_band === "high" || fullRecommendation.criticality_band === "very_high";
+
+  const economyAvailabilityNotes =
+    droppedControls.length > 0
+      ? `Single-AZ database, no cross-region failover — does NOT survive a regional outage despite this workload being assessed as "${fullRecommendation.criticality_band}" criticality; the dropped controls (${droppedControls.map((c) => c.name).join(", ")}) are what provide that resilience in the high_availability tier.`
+      : AVAILABILITY_NOTES_BY_BAND.low;
+
+  const economy = buildOneEnterpriseOption(
+    ctx,
+    computeSpec,
+    archetype,
+    economyRecommendation,
+    "economy",
+    false,
+    droppedControls,
+    economyAvailabilityNotes,
+    humanFeedback
+  );
+  const highAvailability = buildOneEnterpriseOption(
+    ctx,
+    computeSpec,
+    archetype,
+    fullRecommendation,
+    "high_availability",
+    haDbMultiAz,
+    [],
+    AVAILABILITY_NOTES_BY_BAND[fullRecommendation.criticality_band],
+    humanFeedback
+  );
+
+  return [economy, highAvailability];
 }
 
 // ---------------------------------------------------------------------------

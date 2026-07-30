@@ -1,6 +1,6 @@
 # Agent 3b — Policy & Security Validator
 
-**Owner:** InfraGenies · **LLM:** none — deterministic scan · **Executes commands:** never
+**Owner:** InfraGenies · **LLM:** none — deterministic scan · **Executes commands:** never · **Skills:** none
 
 **Status:** not in the original spec set (`01`–`07`); added post-hoc to close the "self-correction loop"
 gap described in `source_configuration/ops-master-agent-solution.md` §4, which had no backing
@@ -37,6 +37,7 @@ a retry; everything else is reported once and shown to the human.
 | `unpinned_image_tag` | high | an `image:` value has no tag or is tagged `:latest` | no |
 | `unexpected_published_port` | medium | a published host port isn't in the approved `CapacityPlan.network.expose` | no |
 | `prod_single_replica` | medium | `environment` matches `prod` and an internet-facing service has `replicas < 2` | no |
+| `missing_resilience_config` | medium | (freeform compose payloads only) a service is missing a `healthcheck` or `restart` policy — catalog templates always include both, so this only fires on LLM-hand-written output | no |
 
 `passed = true` iff no `critical`/`high` finding remains. The three container-escape checks
 (`privileged_container`, `host_network`, `docker_socket_mount`) can't fire against today's templates —

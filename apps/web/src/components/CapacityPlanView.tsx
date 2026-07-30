@@ -132,6 +132,63 @@ export function CapacityPlanView({
               Storage: {activeOption.storage.map((s) => `${s.name} (${s.size}, attached to ${s.attached_to})`).join("; ")}
             </div>
           )}
+
+          {(activeOption.included_components.length > 0 || activeOption.skipped_components.length > 0) && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {activeOption.included_components.length > 0 && (
+                <div className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-3">
+                  <span className="text-xs font-semibold text-slate-300">Included</span>
+                  <ul className="mt-2 space-y-1.5">
+                    {activeOption.included_components.map((c) => (
+                      <li key={c.component} className="text-xs text-slate-400">
+                        <span className="text-slate-200">{c.component}</span> — {c.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {activeOption.skipped_components.length > 0 && (
+                <div className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-3">
+                  <span className="text-xs font-semibold text-slate-300">Skipped</span>
+                  <ul className="mt-2 space-y-1.5">
+                    {activeOption.skipped_components.map((c) => (
+                      <li key={c.component} className="text-xs text-slate-400">
+                        <span className="text-slate-200">{c.component}</span> — {c.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeOption.task_graph.length > 0 && (
+            <div className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-3">
+              <span className="text-xs font-semibold text-slate-300">Provisioning steps</span>
+              <ol className="mt-2 space-y-1">
+                {activeOption.task_graph.map((t) => (
+                  <li key={t.step} className="text-xs text-slate-400">
+                    <span className="text-slate-500">{t.step}.</span> {t.task}{" "}
+                    <span className="text-slate-600">({t.component})</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {(activeOption.manual_estimate_person_days > 0 || activeOption.agent_estimate_minutes > 0) && (
+            <div className="text-xs text-slate-400">
+              ~{activeOption.manual_estimate_person_days} person-day(s) manually vs. ~{activeOption.agent_estimate_minutes}{" "}
+              min with this pipeline.
+            </div>
+          )}
+
+          {activeOption.scaling_strategy && (
+            <div className="text-xs text-slate-400">
+              Scaling: {activeOption.scaling_strategy.min_replicas}–{activeOption.scaling_strategy.max_replicas} replicas —{" "}
+              {activeOption.scaling_strategy.trigger_description}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -65,4 +65,45 @@ backend, not by you — just size each tier honestly; don't pre-filter.
 
 For operation=modify: plan ONLY the delta per tier; never touch volumes holding existing data.
 Each tier's reasoning must be 3-6 sentences, plain business English, showing the arithmetic.
+
+Scoping narrative (included_components / skipped_components / task_graph), per tier:
+- included_components: one entry per service in this tier's "services" array, naming the component and
+  the one-line reason it's in scope (what the request needs it for). Add an entry for the nginx load
+  balancer when replicas > 1, and for persistent volumes when storage is non-empty.
+- skipped_components: only list a genuine tradeoff a reviewer would want called out for THIS tier — e.g.
+  "Multi-AZ redundancy: skipped, cost-sensitive economy tier" or "Database Multi-AZ replication: skipped,
+  sandbox can't replicate stateful services". Do NOT list every AWS/K8s feature that simply wasn't
+  relevant to the request (e.g. don't say "WAF: skipped" on a plan that never needed one) — that reads as
+  noise, not insight.
+- task_graph: the ordered, concrete provisioning steps this tier's plan implies, restating the
+  services/storage/network already decided (e.g. "Render compose service for X" per service, "Provision
+  volume Y" per volume, "Configure nginx load balancer" if scaled, ending with a validation step). This is
+  not a new planning decision — it's the plan already produced, laid out as steps a human would recognize.
+- Load-balancer included_components entries must name the mechanism, not just say "load balancer" — e.g.
+  "Nginx load balancer (round-robin)" for compose, "Application Load Balancer (round-robin)" for AWS/EKS.
+
+scaling_strategy, per tier — narrative only, there is no live autoscaler in this sandbox (no HPA
+controller, no cloud auto-scaling group); replicas are fixed once at plan time. Still document the
+floor/ceiling and the condition a human would act on:
+- min_replicas = this tier's already-computed replica floor (1 for economy, the environment-aware floor
+  for balanced/high_availability — same value already used to size "services").
+- max_replicas = the sandbox's existing hard replica ceiling (4) for the compose path; for AWS/enterprise
+  targets, use whatever ceiling that path's worked example/archetype already implies (e.g. EKS node
+  capacity) rather than inventing a new number.
+- trigger_description: name the specific condition (e.g. "sustained rps exceeds this tier's
+  headroom-adjusted per-instance capacity"), and say plainly that no live autoscaler enforces it — a
+  human would act on this manually. If replicas were set by an explicit request instruction rather than
+  load, say so instead of inventing a trigger.
+
+Turnaround estimate (manual_estimate_person_days / agent_estimate_minutes), per tier — this is the
+platform's core ROI pitch (days of manual platform-engineering work vs. minutes with this pipeline), so
+keep it honest and proportionate to what's actually in the tier, not a flat marketing number:
+- manual_estimate_person_days ≈ 1 day baseline + 0.5 day per service beyond the first + 1 extra day if
+  this tier is high_availability (multi-AZ/redundancy design and review takes longer). Round to the
+  nearest half-day. AWS/Terraform-target tiers (managed services, IAM, landing zone) run structurally
+  heavier than a compose target — scope those illustratively higher (roughly 2-3x the compose formula),
+  same "illustrative, not measured" caveat already used for AWS cost figures.
+- agent_estimate_minutes ≈ 10 + 3 minutes per service, capped around 30 for a compose target (reflects
+  planning + generation + validation); AWS/enterprise targets can run higher (up to ~40-60) to reflect the
+  extra `terraform validate`/managed-control steps.
 ```

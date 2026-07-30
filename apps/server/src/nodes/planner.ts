@@ -1,12 +1,20 @@
 import {
+  ArchitectureRecommendationSchema,
+  CapacityPlanOptionSchema,
   CapacityPlanSchema,
+  type ArchitectureRecommendation,
   type CapacityPlan,
   type CapacityPlanOption,
+  type ComponentNote,
   type PlanRequest,
+  type ScalingStrategy,
   type ServiceSpec,
   type StorageSpec,
+  type TaskGraphStep,
   type Tier,
 } from "@ops-master/shared";
+import { z } from "zod";
+import { isMockMode } from "../llm/client.js";
 import { loadPrompt } from "../llm/promptLoader.js";
 import { loadSkill } from "../llm/skillLoader.js";
 import { runLLMJson } from "../llm/runLLMJson.js";
@@ -28,9 +36,8 @@ import { BUILD_REGISTRY, BUILD_SENTINEL_PREFIX } from "./buildRegistry.js";
 // separately and spliced into the per-request user turn (see buildUserPrompt).
 const SYSTEM_PROMPT = [loadPrompt("02-planner.md"), loadSkill("sizing-workloads")].join("\n\n");
 
-const SCHEMA_SHAPE = `{
-  "request_id": "string",
-  "options": [{
+/** One priced tier's JSON grammar — reused verbatim across the generic schema shape and both enterprise passes so they never drift apart. */
+const CAPACITY_PLAN_OPTION_SHAPE = `{
     "tier": "economy" | "balanced" | "high_availability",
     "services": [{ "name": "string", "image": "string", "cpu": "string e.g. 1.0", "memory": "string e.g. 512Mi", "replicas": number, "ports": [number], "managed_service": "rds" | "dynamodb" | "elasticache" | null, "multi_az": boolean }],
     "storage": [{ "name": "string", "type": "volume", "size": "string e.g. 1Gi", "attached_to": "string, a service name" }],
@@ -40,16 +47,58 @@ const SCHEMA_SHAPE = `{
     "infeasibility_reason": "string | null",
     "estimated_cost_usd_monthly": number,
     "headroom_pct": number,
-    "availability_notes": "string, one sentence on what does/doesn't survive a failure at this tier"
-  }],
+    "availability_notes": "string, one sentence on what does/doesn't survive a failure at this tier",
+    "included_components": [{ "component": "string", "reason": "string, why this is in scope for this tier" }],
+    "skipped_components": [{ "component": "string", "reason": "string -- only genuine tradeoffs a reviewer would want called out, not an exhaustive list of every unused service" }],
+    "task_graph": [{ "step": number, "task": "string, one concrete provisioning step", "component": "string" }],
+    "manual_estimate_person_days": "number, see sizing-workloads.md formula",
+    "agent_estimate_minutes": "number, see sizing-workloads.md formula",
+    "scaling_strategy": { "min_replicas": number, "max_replicas": number, "trigger_description": "string, the specific condition a human would scale on -- narrative only, no live autoscaler exists" } | null
+  }`;
+
+/** Fixes the "tier" line of CAPACITY_PLAN_OPTION_SHAPE to a single literal value — used by the enterprise passes, each of which only ever produces one specific tier. */
+function optionShapeForTier(tier: "economy" | "high_availability"): string {
+  return CAPACITY_PLAN_OPTION_SHAPE.replace(
+    `"tier": "economy" | "balanced" | "high_availability",`,
+    `"tier": "${tier}" (fixed — this pass produces ONLY the ${tier} tier),`
+  );
+}
+
+/** Extracted so both the generic schema shape and enterprise Pass 1 can reference the same grammar. */
+const ARCHITECTURE_RECOMMENDATION_SHAPE = `{"archetype": "solo_ecs_fargate" | "team_ecs_fargate_ha" | "scale_up_eks" | "enterprise_eks_landing_zone", "archetype_reasoning": "string", "criticality_score": number, "criticality_band": "low" | "medium" | "high" | "very_high", "criticality_reasoning": "string", "managed_controls": [{"name": "string", "category": "network" | "identity" | "detection" | "data_protection" | "dr_ha" | "compliance" | "cost_governance", "triggered_by": "archetype" | "criticality" | "compliance_overlay", "reasoning": "string", "compliance_tags": ["string"], "estimated_cost_usd_monthly": number, "terraform_bundle_template_id": "string | null"}], "compliance_overlay": ["pci_dss" | "hipaa" | "soc2" | "none", "... one entry per compliance_targets value in enterprise_context, NOT objects"], "total_controls_cost_usd_monthly": number, "alternatives_considered": [{"option": "string", "pros": "string", "cons": "string", "rejected_because": "string | null"}], "client_classification": "string", "enterprise_context": "<copy of the input PlanRequest.enterprise_context, verbatim>"}`;
+
+const SCHEMA_SHAPE = `{
+  "request_id": "string",
+  "options": [${CAPACITY_PLAN_OPTION_SHAPE}],
   "recommended_tier": "economy" | "balanced" | "high_availability",
   "feasible": boolean,
   "infeasibility_reason": "string | null",
-  "architecture_recommendation": "OMIT this field entirely unless enterprise_mode=true (see ENTERPRISE MODE note below). When present it MUST match this exact shape, field names and enum values verbatim — no substitute names, no extra enum values: {\\"archetype\\": \\"solo_ecs_fargate\\" | \\"team_ecs_fargate_ha\\" | \\"scale_up_eks\\" | \\"enterprise_eks_landing_zone\\", \\"archetype_reasoning\\": \\"string\\", \\"criticality_score\\": number, \\"criticality_band\\": \\"low\\" | \\"medium\\" | \\"high\\" | \\"very_high\\", \\"criticality_reasoning\\": \\"string\\", \\"managed_controls\\": [{\\"name\\": \\"string\\", \\"category\\": \\"network\\" | \\"identity\\" | \\"detection\\" | \\"data_protection\\" | \\"dr_ha\\" | \\"compliance\\" | \\"cost_governance\\", \\"triggered_by\\": \\"archetype\\" | \\"criticality\\" | \\"compliance_overlay\\", \\"reasoning\\": \\"string\\", \\"compliance_tags\\": [\\"string\\"], \\"estimated_cost_usd_monthly\\": number, \\"terraform_bundle_template_id\\": \\"string | null\\"}], \\"compliance_overlay\\": [\\"pci_dss\\" | \\"hipaa\\" | \\"soc2\\" | \\"none\\", ... one entry per compliance_targets value in enterprise_context, NOT objects], \\"total_controls_cost_usd_monthly\\": number, \\"alternatives_considered\\": [{\\"option\\": \\"string\\", \\"pros\\": \\"string\\", \\"cons\\": \\"string\\", \\"rejected_because\\": \\"string | null\\"}], \\"client_classification\\": \\"string\\", \\"enterprise_context\\": <copy of the input PlanRequest.enterprise_context, verbatim>}"
+  "architecture_recommendation": "ALWAYS OMIT this field — enterprise_mode requests never use this schema shape (they go through a separate two-pass flow, see runEnterprisePlanner)."
 }`;
 
 const AWS_TARGET_NOTE = "\n\n" + loadSkill("managed-service-substitution");
-const ENTERPRISE_MODE_NOTE = "\n\n" + loadSkill("compliance-and-dr-reasoning");
+const ENTERPRISE_SKILL = loadSkill("compliance-and-dr-reasoning");
+
+const ENTERPRISE_PASS1_NOTE =
+  '\n\nTHIS IS PASS 1 of 2 for this enterprise_mode request. Produce the full-posture "high_availability" ' +
+  "option plus the complete architecture_recommendation — architecture_recommendation is computed once and " +
+  "reused as-is for pass 2, so get it right here; it will not be asked for again.\n\n" +
+  ENTERPRISE_SKILL;
+
+const ENTERPRISE_PASS2_NOTE =
+  '\n\nTHIS IS PASS 2 of 2 for this enterprise_mode request. Pass 1\'s "high_availability" option and its ' +
+  "architecture_recommendation are given to you below as ground truth — do not recompute or restate them. " +
+  'Produce ONLY the cost-reduced "economy" option.\n\n' +
+  ENTERPRISE_SKILL;
+
+const ENTERPRISE_PASS1_SCHEMA_SHAPE = `{
+  "option": ${optionShapeForTier("high_availability")},
+  "architecture_recommendation": ${ARCHITECTURE_RECOMMENDATION_SHAPE}
+}`;
+
+const ENTERPRISE_PASS2_SCHEMA_SHAPE = `{
+  "option": ${optionShapeForTier("economy")}
+}`;
 
 function buildUserPrompt(
   planRequest: PlanRequest,
@@ -63,10 +112,10 @@ function buildUserPrompt(
   const feedbackNote = humanFeedback
     ? `\n\nA human reviewer rejected the previous plan with this feedback — address it directly:\n"${humanFeedback}"`
     : "";
-  const enterpriseNote = planRequest.enterprise_mode ? ENTERPRISE_MODE_NOTE : "";
-  const awsNote = !planRequest.enterprise_mode && planRequest.constraints.target === "aws" ? AWS_TARGET_NOTE : "";
+  // Never enterprise_mode here — runPlanner routes those to runEnterprisePlanner before this is called.
+  const awsNote = planRequest.constraints.target === "aws" ? AWS_TARGET_NOTE : "";
   return [
-    `PlanRequest:\n${JSON.stringify(planRequest, null, 2)}${modifyNote}${feedbackNote}${awsNote}${enterpriseNote}`,
+    `PlanRequest:\n${JSON.stringify(planRequest, null, 2)}${modifyNote}${feedbackNote}${awsNote}`,
     `Respond with ONLY a JSON object matching exactly this shape:\n${SCHEMA_SHAPE}`,
   ].join("\n\n");
 }
@@ -93,6 +142,51 @@ function tierConfigs(isProd: boolean): TierConfig[] {
   ];
 }
 
+function componentNote(component: string, reason: string): ComponentNote {
+  return { component, reason };
+}
+
+/**
+ * Ordered provisioning steps a tier's plan implies, restating the
+ * services/storage/network already decided above rather than deciding
+ * anything new — mirrors the JSON worked example in USE_CASES.md UC-10.
+ */
+function buildTaskGraph(
+  services: ServiceSpec[],
+  storage: StorageSpec[],
+  addNginx: boolean,
+  format: "compose" | "terraform" = "compose"
+): TaskGraphStep[] {
+  const componentLabel = format === "compose" ? "Docker Compose" : "Terraform";
+  const steps: TaskGraphStep[] = [];
+  let step = 1;
+  for (const s of services) {
+    steps.push({ step: step++, task: `Render ${format} definition for service "${s.name}"`, component: componentLabel });
+  }
+  for (const st of storage) {
+    steps.push({ step: step++, task: `Provision volume "${st.name}"`, component: componentLabel });
+  }
+  if (addNginx) {
+    steps.push({ step: step++, task: "Configure nginx load balancer in front of the scaled service", component: "Nginx" });
+  }
+  steps.push({
+    step: step++,
+    task: format === "compose" ? "Validate compose config" : "Validate terraform plan",
+    component: "Validation",
+  });
+  return steps;
+}
+
+/** Manual-vs-agent turnaround estimate — formula documented in skills/sizing-workloads.md. */
+function estimateManualPersonDays(numServices: number, tier: Tier): number {
+  const raw = 1 + 0.5 * Math.max(0, numServices - 1) + (tier === "high_availability" ? 1 : 0);
+  return Math.round(raw * 2) / 2; // nearest half-day
+}
+
+function estimateAgentMinutes(numServices: number): number {
+  return Math.min(30, 10 + 3 * numServices);
+}
+
 /**
  * UC-9 worked example (agent-md-files/USE_CASES.md): AWS's own
  * retail-store-sample-app, 5 services, each data dependency substituted for
@@ -108,6 +202,21 @@ const RETAIL_APP_SERVICES: { name: string; lang: string; managed?: "rds" | "dyna
   { name: "orders", lang: "Java", managed: "rds" },
   { name: "checkout", lang: "Node.js", managed: "elasticache" },
 ];
+
+/** Compute + managed-service provisioning steps for the fixed UC-9 retail-store-sample-app topology. */
+function buildAwsTaskGraph(computeLabel: string): TaskGraphStep[] {
+  const steps: TaskGraphStep[] = [];
+  let step = 1;
+  steps.push({ step: step++, task: "Provision VPC, ALB, and NAT Gateway(s)", component: "Terraform / AWS networking" });
+  for (const s of RETAIL_APP_SERVICES) {
+    steps.push({ step: step++, task: `Deploy ${computeLabel} workload for "${s.name}"`, component: computeLabel });
+    if (s.managed) {
+      steps.push({ step: step++, task: `Provision ${s.managed.toUpperCase()} for "${s.name}"`, component: s.managed.toUpperCase() });
+    }
+  }
+  steps.push({ step: step++, task: "Validate terraform plan", component: "Validation" });
+  return steps;
+}
 
 function buildAwsOptions(planRequest: PlanRequest, humanFeedback?: string): CapacityPlanOption[] {
   function services(taskCount: number, cpu: string, memory: string, multiAz: boolean): ServiceSpec[] {
@@ -155,6 +264,25 @@ function buildAwsOptions(planRequest: PlanRequest, humanFeedback?: string): Capa
     headroom_pct: 0,
     availability_notes:
       "No failover on compute or any data store — a task, AZ, or instance restart causes a brief outage; fine for a demo/staging env.",
+    included_components: [
+      ...RETAIL_APP_SERVICES.map((s) =>
+        componentNote(s.name, s.managed ? `containerized service backed by managed ${s.managed.toUpperCase()}` : "containerized service, no managed data dependency")
+      ),
+      componentNote("Application Load Balancer (round-robin)", "fronts all 5 services across their single Fargate task each"),
+    ],
+    skipped_components: [
+      componentNote("Multi-AZ compute (EKS)", "cost-sensitive economy tier — single ECS Fargate task per service; see availability_notes"),
+      componentNote("Multi-AZ managed data stores", "single-AZ RDS / single-node ElastiCache chosen for cost; Multi-AZ is the high_availability tier's tradeoff"),
+    ],
+    task_graph: buildAwsTaskGraph("ECS Fargate"),
+    // AWS/Terraform work (VPC, IAM, managed services) is heavier than the compose path's formula accounts for — illustrative figures, same basis as the cost estimates above.
+    manual_estimate_person_days: 6,
+    agent_estimate_minutes: 25,
+    scaling_strategy: {
+      min_replicas: 1,
+      max_replicas: 1,
+      trigger_description: "no autoscaling — economy tier is cost-optimized for a fixed single-task-per-service footprint; scale to high_availability instead of scaling this tier",
+    },
   };
 
   const highAvailability: CapacityPlanOption = {
@@ -176,6 +304,21 @@ function buildAwsOptions(planRequest: PlanRequest, humanFeedback?: string): Capa
     cost_basis: "rate_table",
     headroom_pct: 0.2,
     availability_notes: "Survives an AZ outage on every tier — DB, cache, and compute all have a standby.",
+    included_components: [
+      ...RETAIL_APP_SERVICES.map((s) =>
+        componentNote(s.name, s.managed ? `containerized service backed by Multi-AZ managed ${s.managed.toUpperCase()}` : "containerized service, 2 pod replicas across 2 AZs")
+      ),
+      componentNote("Application Load Balancer (round-robin)", "fronts all 5 services across 2 pod replicas each, spread over 2 AZs"),
+    ],
+    skipped_components: [],
+    task_graph: buildAwsTaskGraph("EKS"),
+    manual_estimate_person_days: 8,
+    agent_estimate_minutes: 35,
+    scaling_strategy: {
+      min_replicas: 2,
+      max_replicas: 4,
+      trigger_description: "EKS's node group has headroom for up to 4 pod replicas per service if sustained load exceeds the 2-replica baseline — no live HPA configured in this sandbox, a human would scale manually",
+    },
   };
 
   void planRequest; // topology is fixed per the worked example; request only selects the AWS branch itself
@@ -214,13 +357,20 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
   // example on that same target value — enterprise_mode is a separate signal
   // set by intake.ts.
   if (planRequest.enterprise_mode && planRequest.enterprise_context) {
+    const architecture_recommendation = buildArchitectureRecommendation(planRequest.enterprise_context);
+    // The DR spend (high_availability tier) is only worth defaulting to when criticality actually
+    // warrants it — mirrors the dev/prod-based recommendation logic in the generic compose branch below.
+    const recommended_tier: Tier =
+      architecture_recommendation.criticality_band === "high" || architecture_recommendation.criticality_band === "very_high"
+        ? "high_availability"
+        : "economy";
     return {
       request_id: planRequest.request_id,
       options: buildEnterpriseOptions(planRequest, humanFeedback),
-      recommended_tier: "balanced",
+      recommended_tier,
       feasible: true,
       infeasibility_reason: null,
-      architecture_recommendation: buildArchitectureRecommendation(planRequest.enterprise_context),
+      architecture_recommendation,
     };
   }
   if (planRequest.constraints.target === "aws") {
@@ -257,6 +407,12 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
       cost_basis: "rate_table",
       headroom_pct: 0,
       availability_notes: "not deployable in this sandbox",
+      included_components: [],
+      skipped_components: [],
+      task_graph: [],
+      manual_estimate_person_days: 0,
+      agent_estimate_minutes: 0,
+      scaling_strategy: null,
     };
     return {
       request_id: planRequest.request_id,
@@ -464,6 +620,28 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
     }
 
     const cost = estimateMonthlyCost(services, storage);
+
+    // Restates decisions already made above as a reviewable scoping
+    // narrative — no new sizing logic, see skills/sizing-workloads.md.
+    const serviceReason = (s: ServiceSpec): string => {
+      if (s.name === "app") return `${runtimeNote}, primary application service (${s.replicas} replica(s))`;
+      if (s.name === "db") return "data dependency required by the request, sized 1 instance / 1Gi with a named volume";
+      if (s.name === "cache") return "data dependency required by the request, sized 1 instance / 256Mi, no persistence";
+      if (s.name === "web") return "browser-facing frontend paired with the app backend";
+      return "service required by the request";
+    };
+    const included_components: ComponentNote[] = services.map((s) => componentNote(s.name, serviceReason(s)));
+    if (replicas > 1) {
+      included_components.push(componentNote("Nginx load balancer (round-robin)", "fronts >1 replica since compose can't bind one host port across multiple containers of the same service"));
+    }
+    const skipped_components: ComponentNote[] = [];
+    if (cfg.tier === "economy") {
+      skipped_components.push(componentNote("Extra replica / multi-AZ redundancy", "cost-sensitive economy tier — traded off for lower monthly cost, see availability_notes"));
+    }
+    if (hasDb) {
+      skipped_components.push(componentNote("Database Multi-AZ replication", "sandbox can't replicate stateful services locally — would be Multi-AZ on a real cloud target"));
+    }
+
     return {
       tier: cfg.tier,
       services,
@@ -477,6 +655,19 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
       cost_basis: "rate_table",
       headroom_pct: cfg.headroomPct,
       availability_notes: availabilityNotes,
+      included_components,
+      skipped_components,
+      task_graph: buildTaskGraph(services, storage, replicas > 1),
+      manual_estimate_person_days: estimateManualPersonDays(services.length, cfg.tier),
+      agent_estimate_minutes: estimateAgentMinutes(services.length),
+      scaling_strategy: {
+        min_replicas: cfg.replicaFloor,
+        max_replicas: 4,
+        trigger_description:
+          explicitReplicas !== null
+            ? "replica count was explicitly requested and fixed — not sized by load, so no scaling trigger applies"
+            : `scale from ${cfg.replicaFloor} up to the sandbox ceiling of 4 replicas if sustained rps exceeds this tier's headroom-adjusted per-instance capacity (${perInstance} rps/instance) — no live autoscaler in this sandbox, replicas are fixed at plan time`,
+      },
     };
   }
 
@@ -493,18 +684,143 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
   };
 }
 
+/** 3 by default, 2 for the AWS worked-example note — enterprise_mode never reaches this (see runEnterprisePlanner). */
+function expectedTierCount(planRequest: PlanRequest): number {
+  if (planRequest.constraints.target === "aws") return 2;
+  return 3;
+}
+
+function buildEnterprisePass1UserPrompt(planRequest: PlanRequest, humanFeedback?: string): string {
+  const feedbackNote = humanFeedback
+    ? `\n\nA human reviewer rejected the previous plan with this feedback — address it directly:\n"${humanFeedback}"`
+    : "";
+  return [
+    `PlanRequest:\n${JSON.stringify(planRequest, null, 2)}${feedbackNote}`,
+    ENTERPRISE_PASS1_NOTE,
+    `Respond with ONLY a JSON object matching exactly this shape:\n${ENTERPRISE_PASS1_SCHEMA_SHAPE}`,
+  ].join("\n\n");
+}
+
+function buildEnterprisePass2UserPrompt(
+  planRequest: PlanRequest,
+  pass1Option: CapacityPlanOption,
+  pass1Recommendation: ArchitectureRecommendation,
+  humanFeedback?: string
+): string {
+  const feedbackNote = humanFeedback
+    ? `\n\nA human reviewer rejected the previous plan with this feedback — address it directly:\n"${humanFeedback}"`
+    : "";
+  return [
+    `PlanRequest:\n${JSON.stringify(planRequest, null, 2)}${feedbackNote}`,
+    `Pass 1's "high_availability" option (ground truth, do not restate):\n${JSON.stringify(pass1Option, null, 2)}`,
+    `Pass 1's architecture_recommendation (ground truth, do not restate or recompute):\n${JSON.stringify(pass1Recommendation, null, 2)}`,
+    ENTERPRISE_PASS2_NOTE,
+    `Respond with ONLY a JSON object matching exactly this shape:\n${ENTERPRISE_PASS2_SCHEMA_SHAPE}`,
+  ].join("\n\n");
+}
+
+/**
+ * Two smaller LLM calls instead of one large one — a single call asking for both priced tiers plus the
+ * full architecture_recommendation proved unreliable against real Bedrock (confirmed live: a timeout and
+ * a hard failure where the model returned only one tier even after the validation retry). Pass 1 produces
+ * the full-posture "high_availability" option + architecture_recommendation (same size/shape the original
+ * single-tier design already handled reliably); Pass 2 is given Pass 1's output as ground truth and
+ * produces only a narrower "economy" variant. See skills/compliance-and-dr-reasoning.md.
+ */
+async function runEnterprisePlanner(
+  planRequest: PlanRequest,
+  humanFeedback?: string
+): Promise<{ value: CapacityPlan; rawResponse: string; mocked: boolean }> {
+  if (isMockMode()) {
+    const value = mockPlanner(planRequest, humanFeedback);
+    return { value, rawResponse: JSON.stringify(value, null, 2), mocked: true };
+  }
+
+  const Pass1Schema = z.object({
+    option: CapacityPlanOptionSchema.refine((o) => o.tier === "high_availability", {
+      message: 'pass 1 option.tier must be "high_availability"',
+    }),
+    architecture_recommendation: ArchitectureRecommendationSchema,
+  });
+  const Pass2Schema = z.object({
+    option: CapacityPlanOptionSchema.refine((o) => o.tier === "economy", {
+      message: 'pass 2 option.tier must be "economy"',
+    }),
+  });
+
+  const pass1 = await runLLMJson({
+    schema: Pass1Schema,
+    system: SYSTEM_PROMPT,
+    user: buildEnterprisePass1UserPrompt(planRequest, humanFeedback),
+    mock: (): never => {
+      throw new Error("unreachable — isMockMode() already handled above");
+    },
+    node: "planner-enterprise-pass1",
+  });
+
+  const pass2 = await runLLMJson({
+    schema: Pass2Schema,
+    system: SYSTEM_PROMPT,
+    user: buildEnterprisePass2UserPrompt(planRequest, pass1.value.option, pass1.value.architecture_recommendation, humanFeedback),
+    mock: (): never => {
+      throw new Error("unreachable — isMockMode() already handled above");
+    },
+    node: "planner-enterprise-pass2",
+  });
+
+  const rec = pass1.value.architecture_recommendation;
+  const recommended_tier: Tier =
+    rec.criticality_band === "high" || rec.criticality_band === "very_high" ? "high_availability" : "economy";
+
+  const value: CapacityPlan = {
+    request_id: planRequest.request_id,
+    options: [pass2.value.option, pass1.value.option],
+    recommended_tier,
+    feasible: true,
+    infeasibility_reason: null,
+    architecture_recommendation: rec,
+  };
+
+  return {
+    value,
+    rawResponse: JSON.stringify({ pass1: pass1.rawResponse, pass2: pass2.rawResponse }, null, 2),
+    mocked: false,
+  };
+}
+
 export async function runPlanner(
   planRequest: PlanRequest,
   existingPlan: CapacityPlan | null,
   humanFeedback?: string
 ): Promise<{ value: CapacityPlan; rawResponse: string; mocked: boolean }> {
-  const result = await runLLMJson({
-    schema: CapacityPlanSchema,
-    system: SYSTEM_PROMPT,
-    user: buildUserPrompt(planRequest, existingPlan, humanFeedback),
-    mock: () => mockPlanner(planRequest, humanFeedback),
-    node: "planner",
-  });
+  let result: { value: CapacityPlan; rawResponse: string; mocked: boolean };
+
+  if (planRequest.enterprise_mode && planRequest.enterprise_context) {
+    result = await runEnterprisePlanner(planRequest, humanFeedback);
+  } else {
+    // A real LLM call proved unreliable at reliably emitting the exact tier
+    // count the prompt asks for (observed: silently dropping one tier from a
+    // 3-tier request) even after tightening the prompt's wording — wording
+    // alone isn't a structural guarantee. This refine turns a wrong count into
+    // a schema validation failure so runLLMJson's existing one-retry-with-error
+    // path (runLLMJson.ts) actually fires instead of silently accepting a
+    // short options array.
+    const expectedCount = expectedTierCount(planRequest);
+    const schemaWithTierCheck = CapacityPlanSchema.refine(
+      (plan) => plan.options.length === expectedCount,
+      (plan) => ({
+        message: `options must contain exactly ${expectedCount} entries for this request (tier rule: 3 default / 2 AWS) — got ${plan.options.length}`,
+      })
+    );
+
+    result = await runLLMJson({
+      schema: schemaWithTierCheck,
+      system: SYSTEM_PROMPT,
+      user: buildUserPrompt(planRequest, existingPlan, humanFeedback),
+      mock: () => mockPlanner(planRequest, humanFeedback),
+      node: "planner",
+    });
+  }
 
   let plan = result.value;
 

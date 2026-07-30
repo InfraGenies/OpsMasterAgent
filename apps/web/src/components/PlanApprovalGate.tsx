@@ -1,8 +1,8 @@
 import { useState } from "react";
-import type { CapacityPlan, Tier } from "@ops-master/shared";
-import { CapacityPlanView } from "./CapacityPlanView";
+import type { CapacityPlan } from "@ops-master/shared";
 
-/** Gate 1 of the deploy track: approve the capacity plan itself, before any IaC exists. Tier-switching and
+/** Gate 1 of the deploy track: approve the capacity plan itself, before any IaC exists. Tier-switching lives
+ * in App.tsx's "Capacity Plan" section above this gate (single interactive view, no duplicate rendering);
  * replica/memory edits live here (free, no LLM call) rather than at Gate 2, where the plan is already locked
  * in and only the generated IaC/deploy commands are under review. */
 export function PlanApprovalGate({
@@ -29,11 +29,6 @@ export function PlanApprovalGate({
     setEditing(false);
   }
 
-  function switchTier(tier: Tier) {
-    if (tier === plan.recommended_tier) return;
-    onDecision("edit", null, { selected_tier: tier });
-  }
-
   return (
     <div className="rounded-xl border border-amber-600/50 bg-gradient-to-b from-amber-950/40 to-slate-900/60 p-4 space-y-3 shadow-lg shadow-amber-950/20">
       <div className="flex items-center flex-wrap gap-2">
@@ -42,15 +37,6 @@ export function PlanApprovalGate({
           Plan ready for approval — Gate 1 of 2
         </span>
       </div>
-
-      {plan.options.length > 1 && (
-        <div className="space-y-1.5">
-          <div className="text-xs text-slate-400">
-            Click another tier to re-check readiness for it before approving:
-          </div>
-          <CapacityPlanView plan={plan} selectedTier={plan.recommended_tier} onSelectTier={switchTier} />
-        </div>
-      )}
 
       {editing && (
         <div className="space-y-2 border border-slate-700/70 rounded-lg p-3 bg-slate-950/50">

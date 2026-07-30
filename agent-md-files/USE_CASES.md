@@ -147,6 +147,36 @@ Figures are illustrative — rough, on-demand `us-east-1`-shaped estimates from 
 
 ---
 
+## UC-13 — SCOPING NARRATIVE: 3-developer startup (included/skipped/task_graph/turnaround)
+
+*(Numbered 13, not 10 — UC-10/11a/11b/12 already exist in `apps/server/src/smoke.ts` as Enterprise
+Architecture Advisor scenarios, ahead of where this doc's numbering had gotten to; this avoids colliding
+with them.)*
+
+| | |
+|---|---|
+| **Origin** | Inspired by a captured run of a separate, standalone Python prototype (`source_configuration/otherr-config/`) that produces a single flat plan with a scoping narrative and a manual-vs-agent turnaround estimate; this UC reproduces the same idea against this codebase's real multi-tier contract instead of that prototype's single-plan/EKS shape. |
+| **NL request** | *"We're a 3-developer startup team building a Node.js API with PostgreSQL and Redis for early customers, light traffic for now."* |
+| **Deploy target** | docker-compose |
+| **What it proves** | `CapacityPlanOption.included_components` / `skipped_components` / `task_graph` / `manual_estimate_person_days` / `agent_estimate_minutes` — the "what's in scope and why, and what would this cost a human team" narrative — populated per tier, not just services/cost. Also shows the existing RealWorld-fullstack-default rule (`sizing-workloads.md`) firing alongside genuine dependency-driven sizing (postgres + redis both explicitly requested): the "3 services" framing becomes 4 real services (`app`, `db`, `cache`, `web`) because the flagship reference pair always ships frontend + backend together. |
+| **Verify** | `docker compose config -q` clean; confirmed live in mock mode (`MOCK_LLM` auto-on, no API key) — see the exact captured planner output below. |
+
+**Worked example (confirmed live, mock planner — economy tier, the `recommended_tier` for this `dev` request):**
+
+| Field | Value |
+|---|---|
+| Services | `app` (RealWorld Node/Express, 1 replica), `db` (Postgres, 1Gi volume), `cache` (Redis, 256Mi), `web` (RealWorld React frontend) |
+| `estimated_cost_usd_monthly` | $88 (`cost_basis: "rate_table"`) |
+| `included_components` | app — primary application service; db — data dependency required by the request; cache — data dependency required by the request; web — browser-facing frontend paired with the app backend |
+| `skipped_components` | "Extra replica / multi-AZ redundancy" — cost-sensitive economy tier; "Database Multi-AZ replication" — sandbox can't replicate stateful services locally |
+| `task_graph` | 6 steps: render compose definitions for app/db/cache/web, provision volume `dbdata`, validate compose config |
+| `manual_estimate_person_days` | 2.5 |
+| `agent_estimate_minutes` | 22 |
+
+The `balanced` tier renders identically (0 rps stated → sizing floors out at 1 replica either way; `noteConvergedTiers` appends the "balanced offers no improvement over economy" sentence to its reasoning, same convergence behavior every other UC's tiers already show at low load). The `high_availability` tier adds a 2nd `app` replica + an nginx load-balancer task-graph step (7 steps total), costs $119/mo, and its `manual_estimate_person_days` rises to 3.5 (per the sizing-workloads.md formula: +1 day for the high_availability tier).
+
+---
+
 ## Selection summary
 
 | UC | Scenario axis | Effort | Demo value |
@@ -160,5 +190,6 @@ Figures are illustrative — rough, on-demand `us-east-1`-shaped estimates from 
 | 7 | Modify existing env | Medium | ★★★★★ |
 | 8 | Refusal + rollback | Low | ★★★★★ |
 | 9 | AWS/Terraform multi-tier costing | High | ★★★★★ (runnable — plan-only, never applies to a real account) |
+| 13 | Scoping narrative + turnaround estimate | Low | ★★★★ (shows the "why" and the ROI pitch, not just services/cost) |
 
-Minimum viable demo set: **UC-1, UC-2, UC-7, UC-8** (one repo family + governance story). Add UC-3/4 for variety, UC-5/6 if ahead of schedule, UC-9 to show the multi-tier capacity planning + Terraform/AWS path (plan-only, never applies to a real account).
+Minimum viable demo set: **UC-1, UC-2, UC-7, UC-8** (one repo family + governance story). Add UC-3/4 for variety, UC-5/6 if ahead of schedule, UC-9 to show the multi-tier capacity planning + Terraform/AWS path (plan-only, never applies to a real account), UC-13 to show the included/skipped/task_graph/turnaround scoping narrative.

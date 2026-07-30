@@ -1,6 +1,6 @@
 # Agent 6 — Verify Agent (Health + Load)
 
-**Owner:** InfraGenies · **LLM:** summary narrative only · **Executes commands:** k6 + HTTP checks only
+**Owner:** InfraGenies · **LLM:** summary narrative only · **Executes commands:** k6 + HTTP checks only · **Skills:** none
 
 ## Role
 Prove the environment actually works: health checks per service, then a k6 smoke load test against the plan's stated rps, then emit a `VerifyReport` with a green/red verdict. Red verdict triggers automatic rollback via the orchestrator.

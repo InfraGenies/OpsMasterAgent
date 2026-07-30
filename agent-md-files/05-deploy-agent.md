@@ -1,6 +1,6 @@
 # Agent 5 — Deploy Agent (Executor)
 
-**Owner:** InfraGenies · **LLM:** none — deterministic executor · **Executes commands:** yes, allow-listed only
+**Owner:** InfraGenies · **LLM:** none — deterministic executor · **Executes commands:** yes, allow-listed only · **Skills:** none
 
 ## Role
 Execute the approved `IaCPayload` against the local sandbox, stream logs live to the UI, and roll back on any failure. Deliberately boring and deterministic — reliability of this node is what makes the live demo repeatable.
@@ -27,7 +27,12 @@ Commands run via `subprocess` **argument lists** (never `shell=True`) with cwd p
 2. Snapshot current state (for `modify`: copy previous compose files → rollback target).
 3. Run `apply_command`; stream stdout/stderr line-by-line to UI via WebSocket and to the audit store.
 4. `--wait` ensures compose returns only when containers are healthy (define `healthcheck:` in every template — InfraGenies).
-5. Non-zero exit or timeout → run `rollback_command`, mark `deploy_ok=false`.
+5. Non-zero exit or timeout on a failure that **doesn't** look transient (see below) → run `rollback_command`, mark `deploy_ok=false`.
+   A failure whose output matches a transient-race pattern (port already allocated, i/o timeout, TLS
+   handshake timeout, connection reset — `nodes/deploy.ts`'s `TRANSIENT_FAILURE_PATTERNS`) gets exactly
+   one retry after a fixed 3s backoff before falling through to rollback — a genuine config/payload error
+   fails identically on a retry so this never masks a real problem, it only absorbs a flaky pull/port-bind
+   race. Per `source_configuration/ops-master-agent-enhancements-proposal.md` §6.2.
 6. Success → record container IDs, mapped ports, start times in state → hand to Verify.
 
 ## Rollback semantics

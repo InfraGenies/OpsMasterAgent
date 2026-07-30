@@ -162,7 +162,19 @@ export function App() {
             {detail.capacity_plan && (
               <section className="card p-4">
                 <h3 className="card-title mb-2.5">Capacity Plan</h3>
-                <CapacityPlanView plan={detail.capacity_plan} />
+                {detail.run.status === "awaiting_plan_approval" && detail.capacity_plan.options.length > 1 && (
+                  <p className="text-xs text-slate-400 mb-2">
+                    Click another tier to re-check readiness for it before approving:
+                  </p>
+                )}
+                <CapacityPlanView
+                  plan={detail.capacity_plan}
+                  onSelectTier={
+                    detail.run.status === "awaiting_plan_approval"
+                      ? (tier) => tier !== detail.capacity_plan!.recommended_tier && handleDecision("edit", null, { selected_tier: tier })
+                      : undefined
+                  }
+                />
               </section>
             )}
 

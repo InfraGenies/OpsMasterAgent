@@ -32,6 +32,23 @@ function deterministicReport(input: ReportInput): string {
       lines.push(`| ${s.name} | ${s.image} | ${s.cpu} | ${s.memory} | ${s.replicas} |`);
     }
     lines.push("");
+
+    if (input.capacityPlan.included_components.length > 0) {
+      lines.push("**Scoped in:** " + input.capacityPlan.included_components.map((c) => `${c.component} (${c.reason})`).join("; "));
+    }
+    if (input.capacityPlan.skipped_components.length > 0) {
+      lines.push("**Scoped out:** " + input.capacityPlan.skipped_components.map((c) => `${c.component} (${c.reason})`).join("; "));
+    }
+    if (input.capacityPlan.manual_estimate_person_days > 0 || input.capacityPlan.agent_estimate_minutes > 0) {
+      lines.push(
+        `**Turnaround:** ~${input.capacityPlan.manual_estimate_person_days} person-day(s) manually vs. ~${input.capacityPlan.agent_estimate_minutes} minutes with this pipeline.`
+      );
+    }
+    if (input.capacityPlan.scaling_strategy) {
+      const s = input.capacityPlan.scaling_strategy;
+      lines.push(`**Scaling:** ${s.min_replicas}–${s.max_replicas} replicas — ${s.trigger_description}`);
+    }
+    lines.push("");
   }
 
   if (input.verifyReport) {
@@ -57,7 +74,10 @@ export async function runReport(input: ReportInput): Promise<string> {
     return await completeRaw(
       "You write concise, factual infrastructure deployment reports for a human operator. " +
         "Use ONLY the JSON facts given to you — never invent numbers, endpoints, or verdicts. " +
-        "Markdown, under 300 words, include a services table if services are present.",
+        "Markdown, under 300 words, include a services table if services are present. " +
+        "If capacityPlan.included_components/skipped_components/manual_estimate_person_days/" +
+        "agent_estimate_minutes/scaling_strategy are present, summarize what was scoped in vs. out, the " +
+        "turnaround estimate, and the scaling strategy (making clear it's narrative, not a live autoscaler).",
       JSON.stringify(input, null, 2)
     );
   } catch {

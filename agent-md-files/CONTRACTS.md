@@ -30,22 +30,58 @@ of `04-approval-gate.md`.
 
 ## 2. CapacityPlan  (planner → iac_generator, shown to human)
 
+As of the multi-tier revision, `CapacityPlan` is `{ options: CapacityPlanOption[], recommended_tier,
+feasible, infeasibility_reason, architecture_recommendation? }` — exactly three priced tiers
+(`economy`/`balanced`/`high_availability`, two for an `aws` target — see `USE_CASES.md` UC-9), not one flat
+plan. Each `CapacityPlanOption` additionally carries a scoping narrative (`included_components` /
+`skipped_components`), a provisioning `task_graph`, the manual-vs-agent turnaround estimate, and a
+`scaling_strategy` (narrative only — no live autoscaler exists in this sandbox) — see
+`skills/sizing-workloads.md` for the formulas behind all of these.
+
 ```json
 {
   "request_id": "req-2026-0001",
-  "services": [
-    { "name": "api", "image": "node:18-alpine", "cpu": "1.0", "memory": "512Mi", "replicas": 2, "ports": [3000] },
-    { "name": "db", "image": "postgres:16-alpine", "cpu": "1.0", "memory": "1Gi", "replicas": 1, "ports": [5432] }
+  "options": [
+    {
+      "tier": "balanced",
+      "services": [
+        { "name": "api", "image": "node:18-alpine", "cpu": "1.0", "memory": "512Mi", "replicas": 2, "ports": [3000] },
+        { "name": "db", "image": "postgres:16-alpine", "cpu": "1.0", "memory": "1Gi", "replicas": 1, "ports": [5432] }
+      ],
+      "storage": [ { "name": "pgdata", "type": "volume", "size": "1Gi", "attached_to": "db" } ],
+      "network": { "expose": [{ "service": "api", "host_port": 3000 }], "internal": ["db"] },
+      "reasoning": "500 rps on an Express CRUD API ≈ 250 rps/instance sustained with 20% headroom → 2 replicas...",
+      "feasible": true,
+      "infeasibility_reason": null,
+      "estimated_cost_usd_monthly": 38,
+      "cost_breakdown": [{ "label": "Compute (api)", "usd_monthly": 24 }, { "label": "Compute (db)", "usd_monthly": 14 }],
+      "cost_basis": "rate_table",
+      "headroom_pct": 0.2,
+      "availability_notes": "2x app replicas, single-instance DB (no failover)",
+      "included_components": [{ "component": "PostgreSQL", "reason": "request specifies a relational store" }],
+      "skipped_components": [{ "component": "Multi-AZ / DB replication", "reason": "sandbox can't replicate stateful services; not needed for a balanced-tier staging target" }],
+      "task_graph": [
+        { "step": 1, "task": "Render compose service for api", "component": "Docker Compose" },
+        { "step": 2, "task": "Render compose service for db", "component": "Docker Compose" },
+        { "step": 3, "task": "Provision volume pgdata", "component": "Docker Compose" },
+        { "step": 4, "task": "Validate compose config", "component": "Validation" }
+      ],
+      "manual_estimate_person_days": 2,
+      "agent_estimate_minutes": 16,
+      "scaling_strategy": {
+        "min_replicas": 2,
+        "max_replicas": 4,
+        "trigger_description": "scale from 2 up to the sandbox ceiling of 4 replicas if sustained rps exceeds this tier's headroom-adjusted per-instance capacity (250 rps/instance) — no live autoscaler in this sandbox, replicas are fixed at plan time"
+      }
+    }
   ],
-  "storage": [ { "name": "pgdata", "type": "volume", "size": "1Gi", "attached_to": "db" } ],
-  "network": { "expose": [{ "service": "api", "host_port": 3000 }], "internal": ["db"] },
-  "reasoning": "500 rps on an Express CRUD API ≈ 250 rps/instance sustained → 2 replicas with headroom...",
+  "recommended_tier": "balanced",
   "feasible": true,
   "infeasibility_reason": null
 }
 ```
 
-If `feasible=false`, orchestrator routes to refusal — planner must fill `infeasibility_reason` and suggest an alternative in `reasoning`.
+If `feasible=false`, orchestrator routes to refusal — planner must fill `infeasibility_reason` and suggest an alternative in the single fallback option's `reasoning`.
 
 ## 2b. ReadinessReport  (planner → readiness_check → iac_generator)
 
@@ -74,6 +110,17 @@ business-context signals (compliance target, team size, RPO/RTO, industry domain
 for every other use case. `PlanRequest` gains two fields (`enterprise_mode`, `enterprise_context`); the
 resulting `ArchitectureRecommendation` rides on `CapacityPlan` (once per request, not once per priced tier,
 since org-scale/criticality/compliance don't vary by tier).
+
+As of the 2-tier revision, `enterprise_mode` requests produce exactly **two** `CapacityPlanOption`s —
+`"economy"` and `"high_availability"` (mirroring UC-9's AWS 2-tier pattern, never a single `"balanced"`
+option) — confirmed necessary after a real reviewer rejected a single-option plan twice, asking for the
+same cost/capacity comparison every other request type gets (see `enterpriseRulesEngine.ts:
+buildEnterpriseOptions`). Org-scale governance controls and compliance-overlay controls (PCI-DSS/HIPAA
+mandated items) never vary by tier — only the `very_high`-band-exclusive discretionary DR/HA controls
+(Shield Advanced, Aurora Global Database, Route 53 failover) and the primary database's Multi-AZ setting
+do. `economy` drops those and its `reasoning` explicitly discloses when that means it no longer meets a
+stated RPO/RTO/multi-region requirement. `ArchitectureRecommendation` itself is computed once per request
+from the *uncapped* (full) control set regardless of tier — see `skills/compliance-and-dr-reasoning.md`.
 
 ```json
 {

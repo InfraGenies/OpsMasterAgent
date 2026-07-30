@@ -88,15 +88,33 @@ const MANDATORY_CONTROLS: Record<Exclude<ComplianceTarget, "none">, MandatoryCon
   ],
 };
 
+/**
+ * Real Bedrock proved inconsistent at reproducing MANDATORY_CONTROLS' exact canonical control names —
+ * not just minor variants (e.g. "IAM Identity Center (SSO)" instead of "AWS IAM Identity Center") but
+ * whole descriptive clauses appended with no consistent punctuation ("AWS Config with HIPAA conformance
+ * pack", "AWS Backup with encrypted vault"). An exact-match lookup, even after stripping the "AWS"/
+ * "Amazon" prefix, still misses these and reports false gaps. Substring containment after stripping the
+ * prefix is robust to both: the mandatory control's short canonical name ("config", "kms", "cloudtrail")
+ * is virtually always a substring of whatever more descriptive name the model actually used, without
+ * needing an exhaustive alias table.
+ */
+function normalizeControlName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/^(aws|amazon)\s+/, "")
+    .trim();
+}
+
 export function runComplianceCheck(recommendation: ArchitectureRecommendation, requestId: string): ComplianceReport {
   const frameworks = recommendation.compliance_overlay.filter(
     (t): t is Exclude<ComplianceTarget, "none"> => t !== "none"
   );
-  const controlNames = new Set(recommendation.managed_controls.map((c) => c.name));
+  const normalizedControlNames = recommendation.managed_controls.map((c) => normalizeControlName(c.name));
 
   const findings: ComplianceControlFinding[] = frameworks.flatMap((framework) =>
     MANDATORY_CONTROLS[framework].map((mc): ComplianceControlFinding => {
-      const satisfied = controlNames.has(mc.satisfied_if_control);
+      const requiredNorm = normalizeControlName(mc.satisfied_if_control);
+      const satisfied = normalizedControlNames.some((name) => name.includes(requiredNorm));
       return {
         control_id: mc.control_id,
         framework,

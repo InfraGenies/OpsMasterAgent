@@ -144,17 +144,57 @@ function mockIntake(requestId: string, rawText: string, planOnly: boolean): Plan
   };
 }
 
+const EXPLICIT_CLOUD_TARGET_RE = /\baws\b/i;
+
+/**
+ * constraints.target's aws-vs-compose choice is a deterministic keyword check, not something needing
+ * LLM judgment — confirmed live that real Bedrock is inconsistent at it for identical input (the same
+ * request text classified "compose" in one run and "aws" in another, producing wildly different
+ * topologies/costs downstream). Backfills from the same regex mockIntake's wantsAws already uses, so a
+ * given request text classifies the same way every time.
+ *
+ * enterprise_mode always forces "aws" outright, deterministically — the Enterprise Architecture Advisor
+ * (enterpriseRulesEngine.ts) always produces AWS-shaped infrastructure (RDS/ECS Fargate/ALB/VPC)
+ * regardless of literal request wording. Confirmed live that leaving this to the model produced a
+ * "compose" target label on a plan that was entirely AWS services — a confusing mismatch, not a genuine
+ * choice the model needs to make.
+ *
+ * Never overrides an explicit localstack/minikube choice outside enterprise_mode — only corrects the
+ * aws<->compose axis when it disagrees with the keyword check.
+ */
+function correctedTarget(
+  rawText: string,
+  enterpriseMode: boolean,
+  modelTarget: PlanRequest["constraints"]["target"]
+): PlanRequest["constraints"]["target"] {
+  if (enterpriseMode) return "aws";
+  const wantsAws = EXPLICIT_CLOUD_TARGET_RE.test(rawText);
+  if (wantsAws && modelTarget !== "aws") return "aws";
+  if (!wantsAws && modelTarget === "aws") return "compose";
+  return modelTarget;
+}
+
 export async function runIntake(
   requestId: string,
   rawText: string,
   existingEnvId: string | null,
   planOnly: boolean
 ): Promise<{ value: PlanRequest; rawResponse: string; mocked: boolean }> {
-  return runLLMJson({
+  const result = await runLLMJson({
     schema: PlanRequestSchema,
     system: SYSTEM_PROMPT,
     user: buildUserPrompt(requestId, rawText, existingEnvId, planOnly),
     mock: () => mockIntake(requestId, rawText, planOnly),
     node: "intake",
   });
+  return {
+    ...result,
+    value: {
+      ...result.value,
+      constraints: {
+        ...result.value.constraints,
+        target: correctedTarget(rawText, result.value.enterprise_mode, result.value.constraints.target),
+      },
+    },
+  };
 }

@@ -227,6 +227,35 @@ export type CostLineItem = z.infer<typeof CostLineItemSchema>;
 export const CostBasisSchema = z.enum(["rate_table", "llm_estimate"]);
 export type CostBasis = z.infer<typeof CostBasisSchema>;
 
+/** One line of the "what's in vs. out of scope for this tier, and why" narrative — see skills/sizing-workloads.md. */
+export const ComponentNoteSchema = z.object({
+  component: z.string(),
+  reason: z.string(),
+});
+export type ComponentNote = z.infer<typeof ComponentNoteSchema>;
+
+/** One ordered provisioning step this tier's plan implies (network -> services -> storage -> ingress -> validation). */
+export const TaskGraphStepSchema = z.object({
+  step: z.number().int(),
+  task: z.string(),
+  component: z.string(),
+});
+export type TaskGraphStep = z.infer<typeof TaskGraphStepSchema>;
+
+/**
+ * Documents the replica floor/ceiling this tier already enforces and when a
+ * human would scale between them — narrative only. No live autoscaler exists
+ * in this sandbox (no HPA controller, no cloud auto-scaling group); replicas
+ * are fixed at plan time by planner.ts's own formulas. See
+ * skills/sizing-workloads.md for where min/max/trigger_description come from.
+ */
+export const ScalingStrategySchema = z.object({
+  min_replicas: z.number().int(),
+  max_replicas: z.number().int(),
+  trigger_description: z.string(),
+});
+export type ScalingStrategy = z.infer<typeof ScalingStrategySchema>;
+
 export const CapacityPlanOptionSchema = z.object({
   tier: TierSchema,
   services: z.array(ServiceSpecSchema),
@@ -243,6 +272,16 @@ export const CapacityPlanOptionSchema = z.object({
   cost_basis: CostBasisSchema.default("llm_estimate"),
   headroom_pct: z.number(),
   availability_notes: z.string(),
+  /** What's in vs. explicitly out of scope for this tier, and why — see skills/sizing-workloads.md. Additive/default([]) so older persisted plans still parse. */
+  included_components: z.array(ComponentNoteSchema).default([]),
+  skipped_components: z.array(ComponentNoteSchema).default([]),
+  /** Ordered provisioning steps this tier's plan implies, for the approval-gate "what will actually happen" view. */
+  task_graph: z.array(TaskGraphStepSchema).default([]),
+  /** ROI narrative: how long a human platform team vs. this pipeline takes for this tier. See skills/sizing-workloads.md for the formula. */
+  manual_estimate_person_days: z.number().default(0),
+  agent_estimate_minutes: z.number().default(0),
+  /** Narrative only — see ScalingStrategySchema. Null where scaling doesn't meaningfully apply (e.g. the infeasible fallback option). */
+  scaling_strategy: ScalingStrategySchema.nullable().default(null),
 });
 export type CapacityPlanOption = z.infer<typeof CapacityPlanOptionSchema>;
 

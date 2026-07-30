@@ -29,9 +29,10 @@ export const bedrockProvider: LLMProvider = {
       body: JSON.stringify({
         system: [{ text: system }],
         messages: [{ role: "user", content: [{ text: user }] }],
-        // Same headroom as anthropicProvider: the Enterprise Architecture
-        // Advisor's larger JSON output needs room beyond Bedrock's small default.
-        inferenceConfig: { maxTokens: 8192 },
+        // Same headroom as anthropicProvider (see that file's comment) — 8192
+        // was confirmed live to truncate the Enterprise Architecture
+        // Advisor's largest outputs mid-JSON.
+        inferenceConfig: { maxTokens: 16000 },
       }),
     });
 

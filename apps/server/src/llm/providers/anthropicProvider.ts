@@ -19,11 +19,13 @@ export const anthropicProvider: LLMProvider = {
   async completeRaw(system: string, user: string): Promise<string> {
     const res = await getClient().messages.create({
       model: env.ANTHROPIC_MODEL,
-      // 8192 (was 4096): the Enterprise Architecture Advisor's
-      // alternatives_considered reasoning (planner.ts's ENTERPRISE_MODE_NOTE)
-      // meaningfully grows the planner's JSON output — headroom avoids
-      // truncated/invalid JSON burning the one runLLMJson retry.
-      max_tokens: 8192,
+      // 16000 (was 8192, was 4096): confirmed live against real Bedrock that
+      // the Enterprise Architecture Advisor's largest outputs (15-step
+      // task_graph + alternatives_considered + managed_controls reasoning,
+      // planner.ts's ENTERPRISE_MODE_NOTE) still truncated mid-JSON at 8192,
+      // burning the one runLLMJson retry on an unparseable response. More
+      // headroom avoids that without changing what's asked for.
+      max_tokens: 16000,
       system,
       messages: [{ role: "user", content: user }],
     });

@@ -1,6 +1,6 @@
 # Agent 4 — Human Approval Gate
 
-**Owner:** InfraGenies · **LLM:** none — this node is human-only by design.
+**Owner:** InfraGenies · **LLM:** none — this node is human-only by design. · **Executes commands:** never · **Skills:** none
 
 ## Role
 Hard stop before any deployment. **Divergence from the original spec**: this is now TWO sequential hard

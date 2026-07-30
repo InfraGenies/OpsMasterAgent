@@ -1,6 +1,11 @@
-# Component 7 — Audit Store & Reporting
+# Agent 7 — Audit Store & Reporting
 
-**Owner:** InfraGenies · **LLM:** report narrative only
+**Owner:** InfraGenies · **LLM:** report narrative only, falls back to a deterministic markdown build on any LLM failure · **Executes commands:** never · **Skills:** none
+
+## Role
+Persist every node's input/output as the one source of truth for run state (see CLAUDE.md's "audit log as
+checkpoint store" design decision), and render the final per-run Deployment Report from that trail plus the
+last `VerifyReport` — see `nodes/report.ts`.
 
 ## Do we need a database? — Decision
 

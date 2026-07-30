@@ -1,0 +1,177 @@
+{
+  "request": "I need a startup app with 3 developers and 3 services",
+  "plan": {
+    "client_name": "Unnamed Startup (3-developer team)",
+    "tier": "Early-stage / seed-stage startup - small team, likely pre-product-market-fit or just past it, needs to move fast and cheap rather than build for scale or compliance",
+    "region": "us-east-1",
+    "interpreted_requirements": {
+      "team_size": 3,
+      "num_services": 3,
+      "expected_traffic": "Low to moderate - assumed early-stage traffic (dev/test + early users), not enterprise scale. No traffic figures were given, so this is inferred from team size and 'startup' framing.",
+      "compliance_requirements": [],
+      "environments_needed": [
+        "dev",
+        "prod"
+      ],
+      "high_availability": false,
+      "multi_az": false,
+      "budget_sensitivity": "high - small team implies limited budget, cost-efficient single-AZ / small instance choices preferred",
+      "reasoning": "Explicitly stated: 3 developers, 3 services, 'startup app'. Inferred: no compliance regime mentioned (no fintech/healthcare/gov keywords) so none assumed. Environments limited to dev+prod (not adding staging/QA since team is only 3 people - unlikely to have dedicated QA). No HA/multi-AZ since a 3-person team's traffic and budget rarely justify the added cost/complexity of multi-AZ redundancy at this stage. Region defaulted to us-east-1 as no region was specified and it's the most common/cheapest AWS default."
+    },
+    "included_components": [
+      {
+        "component": "VPC (single-AZ or 2-AZ minimal for ALB requirement)",
+        "reason": "Baseline networking is required for any AWS workload; kept minimal to satisfy ALB's 2-subnet requirement without full multi-AZ HA"
+      },
+      {
+        "component": "IAM roles/policies (per-developer + CI/CD service roles)",
+        "reason": "3 developers need scoped access; automation needs a deploy role"
+      },
+      {
+        "component": "EKS cluster (single, shared across dev/prod via namespaces)",
+        "reason": "Runs 3 services as containerized workloads; one small cluster is more cost-effective than separate clusters per env for a 3-person team"
+      },
+      {
+        "component": "ECR repositories (x3, one per service)",
+        "reason": "Each service needs its own container image repo"
+      },
+      {
+        "component": "Terraform state backend (S3 + DynamoDB lock table)",
+        "reason": "Needed for safe, repeatable IaC management even at small scale"
+      },
+      {
+        "component": "CI/CD pipelines (x3, one per service)",
+        "reason": "Each service is deployed independently; per-service build/test/deploy pipelines requested implicitly by '3 services'"
+      },
+      {
+        "component": "K8s deployment + service manifests (x3, one per service)",
+        "reason": "Each of the 3 services needs its own workload definition, replica count, and service exposure"
+      },
+      {
+        "component": "Basic monitoring (CloudWatch Container Insights + minimal alerts)",
+        "reason": "Baseline observability needed even for small teams to catch outages/errors"
+      },
+      {
+        "component": "Ingress/ALB controller",
+        "reason": "Needed to expose the 3 services externally under a shared load balancer, cost-efficient vs. 3 separate LBs"
+      }
+    ],
+    "skipped_components": [
+      {
+        "component": "Multi-AZ high availability",
+        "reason": "Skipped - low traffic, small team, cost sensitivity outweighs redundancy benefit at this stage"
+      },
+      {
+        "component": "Compliance audit trail / config rules (e.g. AWS Config, CloudTrail org-wide, GuardDuty)",
+        "reason": "Skipped - no regulatory requirement stated or implied (not fintech/healthcare/gov)"
+      },
+      {
+        "component": "Separate staging environment",
+        "reason": "Skipped - team of 3 devs typically tests directly in dev/prod-like namespace; adding staging adds cost/complexity not justified yet"
+      },
+      {
+        "component": "Multi-region DR",
+        "reason": "Skipped - no DR requirement implied by a startup-scale request"
+      },
+      {
+        "component": "Dedicated per-environment clusters",
+        "reason": "Skipped - single shared EKS cluster with namespace isolation is sufficient and far cheaper for this team size"
+      },
+      {
+        "component": "WAF / advanced security tooling",
+        "reason": "Skipped - not indicated as public-facing at scale or handling sensitive data"
+      }
+    ],
+    "task_graph": [
+      {
+        "step": 1,
+        "task": "Provision VPC with 2 public + 2 private subnets (minimal AZ count for ALB/EKS requirement, not full HA)",
+        "component": "AWS VPC / Terraform"
+      },
+      {
+        "step": 2,
+        "task": "Create IAM roles: developer role (scoped to namespace/ECR access), CI/CD deploy role, EKS node role",
+        "component": "AWS IAM"
+      },
+      {
+        "step": 3,
+        "task": "Set up Terraform remote state backend (S3 bucket + DynamoDB lock table)",
+        "component": "Terraform"
+      },
+      {
+        "step": 4,
+        "task": "Provision EKS cluster (single small managed node group)",
+        "component": "AWS EKS / Terraform"
+      },
+      {
+        "step": 5,
+        "task": "Create ECR repository for service-1",
+        "component": "AWS ECR"
+      },
+      {
+        "step": 6,
+        "task": "Create ECR repository for service-2",
+        "component": "AWS ECR"
+      },
+      {
+        "step": 7,
+        "task": "Create ECR repository for service-3",
+        "component": "AWS ECR"
+      },
+      {
+        "step": 8,
+        "task": "Deploy ALB ingress controller to EKS cluster",
+        "component": "Kubernetes / Ingress"
+      },
+      {
+        "step": 9,
+        "task": "Write k8s Deployment + Service manifest for service-1",
+        "component": "Kubernetes"
+      },
+      {
+        "step": 10,
+        "task": "Write k8s Deployment + Service manifest for service-2",
+        "component": "Kubernetes"
+      },
+      {
+        "step": 11,
+        "task": "Write k8s Deployment + Service manifest for service-3",
+        "component": "Kubernetes"
+      },
+      {
+        "step": 12,
+        "task": "Create CI/CD pipeline (build, test, push to ECR, deploy to EKS) for service-1",
+        "component": "CI/CD"
+      },
+      {
+        "step": 13,
+        "task": "Create CI/CD pipeline for service-2",
+        "component": "CI/CD"
+      },
+      {
+        "step": 14,
+        "task": "Create CI/CD pipeline for service-3",
+        "component": "CI/CD"
+      },
+      {
+        "step": 15,
+        "task": "Configure basic monitoring: CloudWatch Container Insights + alert on pod crash/high error rate",
+        "component": "Monitoring"
+      },
+      {
+        "step": 16,
+        "task": "Run terraform validate/plan and kubectl dry-run validation across all resources",
+        "component": "Validation"
+      }
+    ],
+    "manual_estimate_person_days": 15,
+    "agent_estimate_minutes": 25
+  },
+  "generation_summary": "",
+  "report": "# Infrastructure Plan Report \u2014 Startup (3-Developer Team)\n\n## How We Understood Your Request\nYou described a 3-developer team building a startup app with 3 services. We classified this as an **early-stage/seed-stage startup** \u2014 moving fast and cheap, not yet building for scale or compliance. Key inferences:\n\n- **Traffic:** Low-to-moderate (dev/test + early users) \u2014 no traffic figures were given, so this was inferred from team size, not assumed enterprise-scale.\n- **Environments:** dev + prod only (no separate staging \u2014 a 3-person team typically doesn't have dedicated QA).\n- **Compliance:** None assumed \u2014 no fintech/healthcare/government signals in your request.\n- **High availability / Multi-AZ:** Not required \u2014 traffic and budget at this stage don't justify the added cost.\n- **Budget sensitivity:** High \u2014 architecture favors cost-efficient, minimal footprint over redundancy.\n- **Region:** Defaulted to us-east-1 (cheapest/most common AWS default, since none was specified).\n\nPlease flag if any of these assumptions are wrong (especially traffic volume or compliance needs) \u2014 they drive most of the cost and complexity decisions below.\n\n## What Was Scoped, and Why\nA single shared EKS cluster (namespace-isolated, not per-environment) runs all 3 services \u2014 cheaper than separate clusters at this scale. Each service gets its own ECR repo, CI/CD pipeline, and Kubernetes deployment for independent releases. Networking is kept to the minimum AZ count required by the load balancer, not full multi-AZ redundancy. A shared ALB exposes all services instead of provisioning one load balancer per service. Basic IAM roles (per-developer, CI/CD, node role), a Terraform remote-state backend, and baseline CloudWatch monitoring round out the setup \u2014 enough to operate safely without over-engineering.\n\n## What Was Explicitly Excluded, and Why\n- **Multi-AZ HA & multi-region DR** \u2014 not justified by current traffic/budget.\n- **Compliance tooling** (AWS Config, org-wide CloudTrail, GuardDuty) \u2014 no regulated data indicated.\n- **Separate staging environment** \u2014 team size doesn't support a dedicated QA stage yet.\n- **Per-environment dedicated clusters** \u2014 unnecessary cost at this scale.\n- **WAF/advanced security tooling** \u2014 not indicated as high-exposure public-facing traffic.\n\nThese are the first things to revisit as you grow (more users, funding, compliance triggers, or team size).\n\n## Turnaround\n- **Manual estimate:** ~15 person-days of engineering/architecture time.\n- **Agent-assisted:** ~25 minutes end-to-end (planning + generation + validation).\n\n## Self-Correction Built Into the Pipeline\nThe generation stage runs `terraform validate`/`plan` and `kubectl` dry-run checks across all 16 provisioning steps before anything is presented as final \u2014 this is an automated safeguard, not a one-shot script dump, so structural errors are caught and corrected pre-delivery rather than discovered during your own deployment.",
+  "timings": {
+    "planning_seconds": 24.4,
+    "terraform_generation_seconds": 45.5,
+    "reporting_seconds": 15.8
+  }
+}

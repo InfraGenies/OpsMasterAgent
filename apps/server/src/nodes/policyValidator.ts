@@ -1,4 +1,6 @@
+import yaml from "js-yaml";
 import type { CapacityPlanOption, IaCPayload, PlanRequest, PolicyFinding, PolicyReport } from "@ops-master/shared";
+import type { ComposeDoc } from "../templates/composeBuilder.js";
 
 /**
  * Deterministic policy/security scan of a rendered IaCPayload — no LLM.
@@ -119,6 +121,50 @@ function checkUnexpectedPorts(payload: IaCPayload, plan: CapacityPlanOption): Po
   return findings;
 }
 
+/**
+ * Catalog-rendered payloads always include a healthcheck + restart policy
+ * per service (fixed template code in templates/catalog.ts) — checking those
+ * would be a pure regression guard on code we already control. Freeform
+ * payloads are hand-written by the LLM directly (skills/novel-requirement-
+ * reasoning.md) and genuinely at risk of omitting either, so this only runs
+ * there.
+ */
+function checkResilience(payload: IaCPayload): PolicyFinding[] {
+  if (payload.template_id !== "freeform" || payload.format !== "compose") return [];
+  const composeFile = payload.files.find((f) => f.path === "docker-compose.yml");
+  if (!composeFile) return [];
+
+  let doc: ComposeDoc;
+  try {
+    doc = yaml.load(composeFile.content) as ComposeDoc;
+  } catch {
+    return []; // checkStructural already flags unparseable YAML
+  }
+
+  const findings: PolicyFinding[] = [];
+  for (const [name, svc] of Object.entries(doc?.services ?? {})) {
+    if (!svc.healthcheck) {
+      findings.push({
+        rule_id: "missing_resilience_config",
+        severity: "medium",
+        message: `service "${name}" has no healthcheck defined — deploy's --wait can't confirm it's actually ready before declaring success`,
+        file: composeFile.path,
+        auto_fixable: false,
+      });
+    }
+    if (!svc.restart) {
+      findings.push({
+        rule_id: "missing_resilience_config",
+        severity: "medium",
+        message: `service "${name}" has no restart policy — a crash won't be recovered automatically`,
+        file: composeFile.path,
+        auto_fixable: false,
+      });
+    }
+  }
+  return findings;
+}
+
 function checkProdReplicas(plan: CapacityPlanOption, planRequest: PlanRequest): PolicyFinding[] {
   if (!/prod/i.test(planRequest.environment)) return [];
   const findings: PolicyFinding[] = [];
@@ -166,6 +212,7 @@ export function runPolicyValidator(
     ...checkUnpinnedImages(payload),
     ...checkUnexpectedPorts(payload, plan),
     ...checkProdReplicas(plan, planRequest),
+    ...checkResilience(payload),
   ];
 
   const passed = findings.every((f) => f.severity !== "critical" && f.severity !== "high");

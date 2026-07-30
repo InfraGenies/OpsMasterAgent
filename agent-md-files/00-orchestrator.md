@@ -1,6 +1,6 @@
 # Agent 0 — Orchestrator (LangGraph state machine)
 
-**Owner:** InfraGenies · **Type:** code, not prompt — this is the graph itself, no LLM call of its own.
+**Owner:** InfraGenies · **LLM:** none — code, not prompt (this is the graph itself, no LLM call of its own) · **Executes commands:** none, routes only · **Skills:** none
 
 ## Role
 Owns the state machine: routes `intake → planner → iac_generator → approval_gate → deploy → verify → report`, with conditional edges to `refuse` and `rollback`. Persists state after every node via the SQLite checkpointer so the approval gate survives restarts.

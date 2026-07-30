@@ -1,6 +1,6 @@
 # Agent 3 — IaC Generator
 
-**Owner:** InfraGenies · **LLM:** yes (fills templates ONLY) · **Executes commands:** never
+**Owner:** InfraGenies · **LLM:** yes (fills templates ONLY) · **Executes commands:** never · **Skills:** writing-compose-iac, writing-terraform-iac, novel-requirement-reasoning (always — the request can't know in advance whether it'll hit the catalog or fall through to freeform)
 
 ## Role
 Turn a `CapacityPlan` into an `IaCPayload`, preferring **pre-approved templates** when one fits — the LLM

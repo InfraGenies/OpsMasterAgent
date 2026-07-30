@@ -17,6 +17,30 @@ export interface DeployOutcome {
 }
 
 /**
+ * Exit patterns that look like a transient race (image-pull timeout,
+ * port-bind race, a flaky registry/network blip) rather than a genuinely
+ * broken payload (bad compose syntax, missing image, config error) — those
+ * fail identically on a retry, so only these patterns get one. See
+ * source_configuration/ops-master-agent-enhancements-proposal.md §6.2.
+ */
+const TRANSIENT_FAILURE_PATTERNS = [
+  /address already in use/i,
+  /port is already allocated/i,
+  /i\/o timeout/i,
+  /TLS handshake timeout/i,
+  /Client\.Timeout exceeded/i,
+  /connection reset by peer/i,
+];
+
+function looksTransient(output: string): boolean {
+  return TRANSIENT_FAILURE_PATTERNS.some((p) => p.test(output));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * UC-9 AWS/Terraform path: "deploy" is always plan-only — `apply`/`destroy`
  * are not in commandAllowList.ts at all, so there is no code path from here
  * to a real AWS account regardless of what's installed on this machine. A
@@ -85,10 +109,23 @@ export async function runDeploy(input: DeployInput): Promise<DeployOutcome> {
     };
   }
 
-  const result = await runAllowedCommand("docker", argv, input.deploymentDir, input.onLog);
+  let result = await runAllowedCommand("docker", argv, input.deploymentDir, input.onLog);
   if (result.ok) {
     return { deployOk: true, detail: "containers reported healthy (--wait)", stdout: result.output };
   }
+
+  // One bounded retry, only for failures that look transient — a genuine
+  // config/payload error fails identically on a retry, so this never masks
+  // real problems, it only absorbs a flaky pull/port-bind race.
+  if (looksTransient(result.output)) {
+    input.onLog("[deploy] transient-looking failure, retrying once in 3s: " + result.output.slice(-300));
+    await sleep(3000);
+    result = await runAllowedCommand("docker", argv, input.deploymentDir, input.onLog);
+    if (result.ok) {
+      return { deployOk: true, detail: "containers reported healthy (--wait, after one retry)", stdout: result.output };
+    }
+  }
+
   return {
     deployOk: false,
     detail: "apply_command exited non-zero or timed out",

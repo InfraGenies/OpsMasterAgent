@@ -1,6 +1,6 @@
 # Agent 2c — Compliance & Governance Check
 
-**Owner:** InfraGenies · **LLM:** none — deterministic scan · **Executes commands:** never
+**Owner:** InfraGenies · **LLM:** none — deterministic scan · **Executes commands:** never · **Skills:** none
 
 **Status:** not in the original spec set (`01`–`07`); added to support the Enterprise Architecture Advisor
 mode — a business-description request (compliance target, org scale, DR requirements) rather than a
