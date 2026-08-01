@@ -1,0 +1,27 @@
+{
+  "$comment": "Illustrative, on-demand us-east-1-shaped rate table backing USE_CASES.md UC-9's worked cost example. Not a live pricing API call — see USE_CASES.md UC-9's own disclaimer. Not yet consumed by any prompt or code path — see ../DATASETS.md.",
+  "as_of": "2026-07",
+  "region_assumed": "us-east-1",
+  "compute": {
+    "fargate": { "usd_per_vcpu_hour": 0.04048, "usd_per_gib_hour": 0.004445 },
+    "eks_control_plane": { "usd_per_hour": 0.10 }
+  },
+  "managed_database": {
+    "rds_note": "instance-hour pricing varies by instance class (e.g. db.t3.micro vs db.t3.small) — see AWS RDS pricing page for current per-class rates",
+    "dynamodb_note": "on-demand capacity mode — pay per request, no fixed instance-hour rate",
+    "elasticache_note": "instance-hour pricing varies by node class (e.g. cache.t3.micro vs cache.t3.small)"
+  },
+  "networking": {
+    "nat_gateway": { "usd_per_hour": 0.045, "usd_per_gb_processed": 0.045 }
+  },
+  "worked_example_tiers": {
+    "economy": {
+      "label": "ECS Fargate, single-AZ, 1 task per service (5 services), 0.25 vCPU / 0.5 GB each",
+      "estimated_cost_usd_monthly": 141
+    },
+    "high_availability": {
+      "label": "EKS + 3x t3.medium workers across 2 AZs, Multi-AZ RDS, 2-node ElastiCache, 2x NAT Gateway",
+      "estimated_cost_usd_monthly": 428
+    }
+  }
+}

@@ -41,10 +41,18 @@ export function dumpCompose(doc: ComposeDoc): string {
   return yaml.dump(doc, { noRefs: true, lineWidth: 120 });
 }
 
-/** busybox wget ships in every *-alpine image, so this works with no extra install. */
+/**
+ * busybox wget ships in every *-alpine image with no extra install, but not every image this
+ * catalog can select is Alpine-based (e.g. louislam/uptime-kuma:1 has curl but no wget —
+ * confirmed by exec'ing into the running container: `wget` exits 127 "not found", which made
+ * Docker report a perfectly healthy app as permanently "unhealthy"). Try wget first, then fall
+ * back to curl, so the same healthcheck works on both without needing to know the image's
+ * base distro at render time.
+ */
 export function httpHealthcheck(port: number, path = "/"): ComposeHealthcheck {
+  const url = `http://localhost:${port}${path}`;
   return {
-    test: ["CMD-SHELL", `wget -q --spider http://localhost:${port}${path} || exit 1`],
+    test: ["CMD-SHELL", `wget -q --spider ${url} || curl -sf ${url} -o /dev/null || exit 1`],
     interval: "5s",
     timeout: "3s",
     retries: 10,

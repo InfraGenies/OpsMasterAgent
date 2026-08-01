@@ -19,6 +19,17 @@ import { RunList, StatusBadge } from "./components/RunList";
 import { VerifyReportView } from "./components/VerifyReportView";
 import { useRunSocket } from "./hooks/useRunSocket";
 
+/** Statuses nothing further will happen to without a fresh human decision creating a new
+ * run/gate — safe to stop polling a selected run once it lands on one of these. */
+const TERMINAL_STATUSES = ["deployed", "failed", "rolled_back", "refused", "plan_ready"];
+
+/** Fallback poll interval while a non-terminal run is selected. The WS push (useRunSocket)
+ * is the primary update path; this only exists to recover from a missed/dropped event
+ * (reconnect gap, server restart mid-run) without requiring a manual page reload — see the
+ * req-2026-8be52b43 incident where the UI froze on "running" after the dev server restarted
+ * mid-pipeline even though the backend had already reached the next gate. */
+const POLL_INTERVAL_MS = 5000;
+
 function reportFromEvents(events: AuditEvent[]): string | null {
   const match = [...events].reverse().find((e) => e.node === "report" && e.output_json);
   if (!match?.output_json) return null;
@@ -39,6 +50,8 @@ export function App() {
   const [deciding, setDeciding] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
   selectedIdRef.current = selectedId;
+  const detailStatusRef = useRef<string | null>(null);
+  detailStatusRef.current = detail?.run.status ?? null;
 
   const refreshRuns = useCallback(() => {
     api.listRuns().then(setRuns).catch(console.error);
@@ -73,7 +86,28 @@ export function App() {
     [refreshRuns, refreshDetail]
   );
 
-  useRunSocket(handleWsEvent);
+  const { connected } = useRunSocket(handleWsEvent);
+
+  // Reconnects (including the initial connect) can follow a gap where events were missed —
+  // catch up immediately rather than waiting for the next poll tick.
+  useEffect(() => {
+    if (!connected) return;
+    refreshRuns();
+    if (selectedIdRef.current) refreshDetail(selectedIdRef.current);
+  }, [connected, refreshRuns, refreshDetail]);
+
+  // Fallback for events the WS never delivered at all (see POLL_INTERVAL_MS doc comment).
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      refreshRuns();
+      const currentId = selectedIdRef.current;
+      const currentStatus = detailStatusRef.current;
+      if (currentId && !(currentStatus && TERMINAL_STATUSES.includes(currentStatus))) {
+        refreshDetail(currentId);
+      }
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [refreshRuns, refreshDetail]);
 
   async function handleSubmit(text: string, planOnly: boolean) {
     setSubmitting(true);
@@ -106,7 +140,7 @@ export function App() {
     }
   }
 
-  const report = detail?.run.status && ["deployed", "failed", "rolled_back", "refused", "plan_ready"].includes(detail.run.status)
+  const report = detail?.run.status && TERMINAL_STATUSES.includes(detail.run.status)
     ? reportFromEvents(events)
     : null;
 

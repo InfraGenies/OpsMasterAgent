@@ -10,8 +10,13 @@ ops-master-agent/
 ├── INSTALLATION.md      ← tools, IS/firewall requests, verification checklist
 ├── USE_CASES.md         ← 7 demo scenarios with verified GitHub repos
 ├── WORKFLOW.md          ← flow diagram (Mermaid + ASCII) + state machine + safety rules
+├── AGENTS_AND_SKILLS.md ← one-page index: each node's responsibility + which skill files it uses
+├── DATASETS.md          ← proposal: structured data files backing skills/prompts/mock code's numbers
+├── PRESENTATION.md      ← slide-by-slide source for generating a pitch/technical deck
 ├── contracts/
 │   └── CONTRACTS.md     ← the 4 JSON contracts — FREEZE THESE ON DAY 1
+├── skills/              ← reusable knowledge modules spliced into node prompts at runtime
+├── datasets/            ← example structured data files (see DATASETS.md) — not yet wired into code
 └── agents/
     ├── 00-orchestrator.md   (InfraGenies — LangGraph graph, code not prompt)
     ├── 01-intake.md         (InfraGenies — NL → PlanRequest, safety filter)
@@ -22,6 +27,11 @@ ops-master-agent/
     ├── 06-verify-agent.md   (InfraGenies — health checks + k6 smoke)
     └── 07-audit-store.md    (InfraGenies — SQLite audit/state + DB decision)
 ```
+
+This original pack has since grown three more agent specs (`02b-readiness-check.md`,
+`02c-compliance-check.md`, `03b-policy-validator.md`) beyond the original 7 — see
+[`AGENTS_AND_SKILLS.md`](AGENTS_AND_SKILLS.md) for the full, current node-by-node responsibility list and
+[the root README](../README.md#architecture-decisions) for why each was added.
 
 ## How to use these files in VS Code
 

@@ -1,5 +1,9 @@
 # Ops Master Agent — Workflow & State Machine
 
+> This file describes the original spec (Python/LangGraph/SQLite). For what's actually implemented in this
+> repo's Node/TypeScript stack — including two nodes and several tracks/modes added beyond this spec — see
+> the root [`README.md`](../README.md#project-status) "Project status" and "Architecture decisions" sections.
+
 The system is a **LangGraph state machine with a hard human-approval gate** — not a free-running autonomous agent. Every transition is persisted to the audit store.
 
 > Preview the diagram in VS Code with the **"Markdown Preview Mermaid Support"** extension (`bierner.markdown-mermaid`).

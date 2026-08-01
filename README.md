@@ -110,6 +110,47 @@ allow-list + rollback code path executes correctly; it just isn't a live contain
 Install Docker Desktop per `agent-md-files/INSTALLATION.md` for the live-deploy demos; the pipeline logic
 (intake → planner → IaC → approval → audit) runs and is fully demoable without it.
 
+## Project status
+
+Every node in the [spec-to-code table](#where-each-spec-agent-lives-in-code) below is implemented. Status
+per demo use case (see `agent-md-files/USE_CASES.md` for the full scenario descriptions):
+
+| UC | Scenario | Status |
+|---|---|---|
+| UC-1 | Flagship: Node.js + PostgreSQL @ 500 rps | Working end-to-end (real clone/build, live deploy, k6-style verify); exercised by `npm run smoke` |
+| UC-2 | Simple: RealWorld fullstack dev env | Working end-to-end; exercised by `npm run smoke` |
+| UC-3 | Multi-service voting app (5 containers) | Topology supported by the planner/compose builder; not in the smoke script — manual UI demo only |
+| UC-4 | Scale-out: LB + N replicas | Supported via `compose-lb-replicas-v1` + the nginx-sidecar rule; manual UI demo only |
+| UC-5 | Spring Boot + MySQL (JVM sizing) | Sizing rule implemented; no dedicated build-registry entry, so this is manual UI demo only |
+| UC-6 | Kubernetes / Minikube | Not built — scope cut, see [Architecture decisions](#architecture-decisions) |
+| UC-7 | Modify existing environment | Working end-to-end (plan merge + diff view); manual UI demo |
+| UC-8 | Refusal + rollback (responsible-AI) | Working end-to-end; refusal path exercised by `npm run smoke`, rollback is a manual no-Docker demo |
+| UC-9 | AWS/Terraform multi-tier costing | Runnable, plan-only (`terraform init`/`validate`/`plan`; `apply`/`destroy` are not in the allow-list); exercised by `npm run smoke` |
+| UC-13 | Scoping narrative + turnaround estimate (3-developer startup) | Working end-to-end in mock mode; manual UI demo (not in `npm run smoke`) |
+| Enterprise Architecture Advisor mode | `compliance_check` + managed-controls reasoning (PCI-DSS payment platform, solo MVP, enterprise rescale, and one held-out generalization scenario) | Working; exercised by 4 scenarios in `npm run smoke` beyond the numbered UC set |
+
+Two of the rows above (UC-9's AWS/Terraform path and Enterprise Architecture Advisor mode) are real, working
+features that predate this doc pass but were never called out as their own entries in
+[Architecture decisions](#architecture-decisions) — see the seventh and eighth additions there. Every
+tier in every row above also now carries the scoping/ROI narrative described in the ninth addition.
+
+**Recent reliability hardening**, found and fixed while running the smoke test against a real LLM
+provider — small, but worth tracking since each closes a real observed failure, not a hypothetical one:
+- `deploy.ts` retries once, after a 3s pause, when a `docker compose up` failure looks transient (port
+  still releasing, an image-pull timeout, a flaky registry blip) — matched against a fixed set of patterns;
+  a genuine config/payload error fails identically on retry, so this never masks a real problem.
+- `intake.ts` now deterministically corrects `constraints.target`'s aws-vs-compose choice with a keyword
+  check instead of trusting the model's classification — confirmed live that the same request text was
+  classified differently across runs. `enterprise_mode` requests are always forced to `target: "aws"`
+  outright, since the Enterprise Architecture Advisor always recommends AWS-shaped infrastructure regardless
+  of literal wording.
+- `policyValidator.ts` gained a `checkResilience` rule (missing healthcheck/restart policy) scoped to
+  freeform IaC payloads only — catalog-rendered payloads always have both from fixed template code, so
+  checking those would just be a regression guard on code already controlled elsewhere.
+- `anthropicProvider.ts`/`bedrockProvider.ts`'s `max_tokens` raised 8192→16000 after confirming live that
+  the Enterprise Architecture Advisor's largest outputs (a 15-step `task_graph` plus
+  `alternatives_considered` plus `managed_controls` reasoning) still truncated mid-JSON at 8192.
+
 ## Mock mode (no API key needed)
 
 `MOCK_LLM=true`, or simply leaving `ANTHROPIC_API_KEY` blank, swaps every Claude call for a deterministic
@@ -218,6 +259,56 @@ single scalar to a map (keyed by clone-dir and service name respectively) to sup
 services in one plan; `pipeline.ts`/`verify.ts` similarly changed from a single endpoint+health-path to one
 pair per app-classified service.
 
+A seventh addition: **multi-tier capacity planning + an AWS/Terraform template family** (UC-9). `planner.ts`
+now emits `CapacityPlan.options: CapacityPlanOption[]` (economy/balanced/high_availability, or just
+economy/high_availability when `constraints.target === "aws"`) instead of one flat plan, each tier priced
+(`estimated_cost_usd_monthly`) and reasoned independently. For an AWS-targeted request, `iac_generator` picks
+from `templates/terraformCatalog.ts` (`tf-ecs-fargate-v1` / `tf-eks-v1`) instead of the compose catalogue,
+filling the repo's own bundled Terraform modules rather than hand-rolled resources — same "LLM picks a
+template, backend renders" discipline as compose, extended to `IaCPayload.format: "terraform"`.
+`commandAllowList.ts` permits `terraform init`/`validate`/`plan` only — `apply`/`destroy` are deliberately
+absent from the allow-list, so there is no code path from this UC to a real AWS account; "deploy" always
+resolves to a plan-only, `SIMULATED`-labeled outcome. See `USE_CASES.md` UC-9 for the worked cost comparison.
+
+An eighth addition: **Enterprise Architecture Advisor mode** (`agent-md-files/02c-compliance-check.md`,
+not in the original agent set). `intake` detects business-context signals in `raw_text` (compliance target,
+team size, RPO/RTO, industry domain) and, only when found, sets `PlanRequest.enterprise_mode` +
+`enterprise_context`; the planner then produces one `ArchitectureRecommendation` per request (not per
+tier) via `nodes/enterpriseRulesEngine.ts` — an `org_scale`-driven platform archetype, a weighted
+`criticality_band` score that adds security/DR controls, and framework-driven mandatory controls from
+`compliance_targets`, deduplicated into one `managed_controls` list (each priced via
+`templates/enterpriseCatalog.ts`). `nodes/complianceCheck.ts` then runs once, pre-flight (alongside
+`readiness_check`, before `iac_generator`), checking those controls against a per-framework mandatory-control
+list and surfacing any `gap` as a visible warning at the approval gate — gaps never block the run, same
+"human makes the final call" guardrail as `policy_validator`. UI: `ComplianceReportView.tsx`. Because a
+real LLM call asked to produce both priced tiers *and* the full `architecture_recommendation` in one
+response proved unreliable in practice (confirmed live against Bedrock: a timeout, and separately a
+hard failure where the model returned only one tier even after the schema-validation retry),
+`planner.ts: runEnterprisePlanner` now splits this into **two smaller LLM calls** instead of one: Pass 1
+produces the full-posture `high_availability` option plus the complete `architecture_recommendation`,
+then Pass 2 is given Pass 1's output as ground truth and produces only a cost-reduced `economy` option —
+see `skills/compliance-and-dr-reasoning.md`'s "Two-pass split" note for the exact framing sent each call.
+This mode is absent (`enterprise_mode: false`/`null` fields) for every use case that doesn't trip a business-context
+signal, so UC-1 through UC-9 are unaffected. Exercised by four scenarios in `npm run smoke -w
+@ops-master/server` beyond the numbered UC set (a PCI-DSS payment platform, a 2-developer MVP, an
+enterprise-scale rescale of that same MVP proving `org_scale` and `criticality_band` vary independently, and
+a held-out HIPAA-healthcare scenario proving the rules generalize rather than pattern-matching one canned
+example).
+
+A ninth addition: **per-tier scoping and ROI narrative** on `CapacityPlanOption`
+(`packages/shared/src/contracts.ts`) — `included_components`/`skipped_components` (what's in scope for this
+tier and what was deliberately left out, and why), `task_graph` (the ordered provisioning steps the tier's
+services/storage/network already imply, restated as steps a reviewer recognizes), `scaling_strategy`
+(narrative min/max replicas + the condition a human would scale on — there is no live autoscaler in this
+sandbox, replicas are fixed once at plan time), and `manual_estimate_person_days`/`agent_estimate_minutes`
+(the platform's core ROI pitch: days of manual platform-engineering work vs. minutes with this pipeline,
+scaled by service count and tier, kept illustrative like the existing AWS cost figures rather than
+measured). All four are additive/defaulted (`[]`/`0`/`null`) so older persisted plans still parse. The
+exact formulas the planner cites live in `skills/sizing-workloads.md`'s "Scoping narrative"/"Turnaround
+estimate" sections (see `AGENTS_AND_SKILLS.md`); rendered at the approval gate by
+`web/src/components/CapacityPlanView.tsx`. See `USE_CASES.md` UC-13 for a worked example (a 3-developer
+startup request) with the exact captured field values.
+
 ## Where each spec agent lives in code
 
 | Spec file | Code |
@@ -226,7 +317,8 @@ pair per app-classified service.
 | `01-intake.md` | `apps/server/src/nodes/intake.ts`, prompt at `apps/server/src/prompts/01-intake.md` |
 | `02-planner.md` | `apps/server/src/nodes/planner.ts` + `planMerge.ts`, prompt at `prompts/02-planner.md`, skills at `skills/{sizing-workloads,managed-service-substitution,compliance-and-dr-reasoning}.md` |
 | `02b-readiness-check.md` | `apps/server/src/nodes/readinessCheck.ts` (deterministic, no prompt file — no LLM call), wired into `orchestrator/pipeline.ts: reachApprovalGate`, UI: `web/src/components/ReadinessReportView.tsx` |
-| `03-iac-generator.md` | `apps/server/src/nodes/iacGenerator.ts`, templates in `templates/catalog.ts`, prompt at `prompts/03-iac-generator.md`, skills at `skills/{writing-compose-iac,writing-terraform-iac,novel-requirement-reasoning}.md` |
+| `02c-compliance-check.md` | `apps/server/src/nodes/complianceCheck.ts` + `enterpriseRulesEngine.ts` (deterministic, no prompt file — no LLM call), pricing in `templates/enterpriseCatalog.ts`, wired into `orchestrator/pipeline.ts` alongside `readiness_check`, UI: `web/src/components/ComplianceReportView.tsx` — see "eighth addition" above |
+| `03-iac-generator.md` | `apps/server/src/nodes/iacGenerator.ts`, templates in `templates/catalog.ts` (compose) + `templates/terraformCatalog.ts` (AWS, see "seventh addition" above), prompt at `prompts/03-iac-generator.md`, skills at `skills/{writing-compose-iac,writing-terraform-iac,novel-requirement-reasoning}.md` |
 | `03b-policy-validator.md` | `apps/server/src/nodes/policyValidator.ts` (deterministic, no prompt file — no LLM call), self-correction loop lives in `orchestrator/pipeline.ts: reachApprovalGate`, UI: `web/src/components/PolicyReportView.tsx` |
 | `04-approval-gate.md` | `orchestrator/pipeline.ts` (`reachPlanApprovalGate` = Gate 1, `reachApprovalGate` = Gate 2, `submitDecision`, timeout), UI: `web/src/components/PlanApprovalGate.tsx` (Gate 1), `ApprovalGate.tsx` (Gate 2) |
 | *(not in spec — see "sixth addition" above)* | `apps/server/src/nodes/build.ts` + `buildRegistry.ts` (deterministic, no prompt file — no LLM call beyond the planner's sentinel choice), wired into `orchestrator/pipeline.ts: runDeployThroughReport` right before `deploy` |

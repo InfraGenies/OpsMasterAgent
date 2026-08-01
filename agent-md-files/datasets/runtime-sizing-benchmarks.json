@@ -1,0 +1,33 @@
+{
+  "$comment": "Source data for skills/sizing-workloads.md's opening bullet list. Not yet consumed by any prompt or code path — see ../DATASETS.md. Numbers here must match sizing-workloads.md's ```text block until the two are wired together; if you change one, change both.",
+  "unit_notes": {
+    "rps_per_instance": "sustained requests/sec one instance can serve before the sizing formula adds a replica",
+    "memory": "container memory limit, e.g. \"512Mi\", \"1Gi\"",
+    "cpu": "vCPU limit per replica, e.g. 1.0"
+  },
+  "runtimes": [
+    { "name": "nodejs_express_crud_api", "label": "Node.js/Express CRUD API", "rps_per_instance": 250, "memory": "512Mi", "cpu": 1.0, "replica_formula": "ceil(rps / rps_per_instance)", "replica_min": 1, "replica_max": 4 },
+    { "name": "python_flask_fastapi_sync", "label": "Python/Flask or FastAPI (sync)", "rps_per_instance": 150, "memory": "512Mi", "cpu": 1.0, "replica_formula": "ceil(rps / rps_per_instance)", "replica_min": 1, "replica_max": 4 },
+    { "name": "jvm_spring_boot", "label": "JVM (Spring Boot)", "rps_per_instance": 200, "memory": "1Gi", "cpu": 1.0, "memory_note": "MINIMUM 1Gi per instance (heap + metaspace); set JAVA_OPTS -Xmx768m", "replica_formula": "ceil(rps / rps_per_instance)", "replica_min": 1, "replica_max": 4 },
+    { "name": "postgresql_mysql", "label": "PostgreSQL/MySQL", "rps_per_instance": null, "memory": "1Gi", "cpu": null, "replicas_fixed": 1, "always_volume": true, "note": "Never replicated in sandbox." },
+    { "name": "redis", "label": "Redis", "rps_per_instance": null, "memory": "256Mi", "cpu": null, "replicas_fixed": 1, "always_volume": false, "note": "No volume unless persistence requested." },
+    { "name": "nginx_lb", "label": "Nginx LB", "rps_per_instance": null, "memory": "128Mi", "cpu": null, "note": "Add automatically when replicas > 1 for an HTTP service." },
+    { "name": "static_site", "label": "Static site", "rps_per_instance": null, "memory": "128Mi", "cpu": null, "image": "nginx:alpine", "replicas_fixed": 1 }
+  ],
+  "tiers": {
+    "economy": { "headroom_pct": 0, "replica_floor": 1, "replica_max": 4 },
+    "balanced": { "headroom_pct": 0.2, "replica_floor_prod_like": 2, "replica_floor_default": 1, "replica_max": 4 },
+    "high_availability": { "extra_stateless_replica": 1, "replica_max": 4, "note": "Stateful services (db/cache) stay single-instance in this sandbox." }
+  },
+  "sandbox_limits": {
+    "max_memory_gb_default": 8,
+    "max_total_replicas": 8,
+    "max_rps": 2000
+  },
+  "cost_rate_table": {
+    "usd_per_vcpu_hour": 0.04,
+    "usd_per_gib_ram_hour": 0.005,
+    "usd_per_gib_storage_month": 0.10,
+    "hours_per_month": 730
+  }
+}

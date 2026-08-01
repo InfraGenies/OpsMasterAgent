@@ -458,7 +458,12 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
   // it. Set once here and consumed further down when building services.
   let isRealworldFullstackDefault = false;
   let frontendEntry: (typeof BUILD_REGISTRY)[string] | null = null;
-  if (/\b(monitoring|uptime|status page|dashboard)\b/.test(rawLower) && !planRequest.repo_url) {
+  // "dashboard" alone used to be in this alternation, but it's too generic — it false-matched
+  // "voting application with a vote frontend, results dashboard, ..." (req-2026-ab8c477f) into
+  // an unrelated monitoring-tool placeholder. "monitoring"/"uptime"/"status page" are specific
+  // enough on their own to still catch real monitoring-tool requests, including ones that also
+  // happen to say "dashboard" (e.g. "monitoring dashboard" already matches on "monitoring").
+  if (/\b(monitoring|uptime|status page)\b/.test(rawLower) && !planRequest.repo_url) {
     image = "louislam/uptime-kuma:1";
     appPort = 3001;
     appVolume = true;
