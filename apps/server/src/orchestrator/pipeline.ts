@@ -848,11 +848,13 @@ async function runDeployThroughReport(requestId: string): Promise<void> {
   broadcastEvent("run_finished", requestId, "report", { status: "deployed", report: reportMd, verify: verifyReport, endpoints });
 }
 
-/** Which actions make sense at each gate — a mismatched action/status pair is a clear client error, not a silent no-op. */
+/** Which actions make sense at each gate — a mismatched action/status pair is a clear client error, not a silent no-op.
+ * "abandon" is available everywhere "reject" is: unlike "reject" (which always loops back to the planner for
+ * another LLM pass), it terminates the run immediately via refuseRun, no rework. */
 const ALLOWED_ACTIONS_BY_STATUS: Record<string, DecisionAction[]> = {
-  awaiting_plan_approval: ["approve_plan", "reject", "edit"],
-  awaiting_approval: ["approve", "reject"],
-  awaiting_plan_review: ["accept_plan", "reject"],
+  awaiting_plan_approval: ["approve_plan", "reject", "edit", "abandon"],
+  awaiting_approval: ["approve", "reject", "abandon"],
+  awaiting_plan_review: ["accept_plan", "reject", "abandon"],
 };
 
 export async function submitDecision(
@@ -929,6 +931,18 @@ export async function submitDecision(
   if (action === "accept_plan") {
     finalizePlanOnly(requestId).catch(async (err) => {
       console.error(`[pipeline] plan finalization failed for ${requestId}:`, err);
+      await store.updateRunStatus(requestId, "failed", new Date().toISOString()).catch(() => {});
+      broadcastEvent("run_finished", requestId, undefined, { status: "failed", error: String(err) });
+    });
+    return;
+  }
+
+  if (action === "abandon") {
+    // Unlike "reject" (always another planner LLM pass, back to the same gate), this ends the
+    // run outright — no rework loop, no further LLM calls. Goes straight to refuseRun's
+    // "refused" terminal status, same as an infeasible plan or a timed-out gate.
+    refuseRun(requestId, comment ? `abandoned by human: ${comment}` : "abandoned by human").catch(async (err) => {
+      console.error(`[pipeline] abandon failed for ${requestId}:`, err);
       await store.updateRunStatus(requestId, "failed", new Date().toISOString()).catch(() => {});
       broadcastEvent("run_finished", requestId, undefined, { status: "failed", error: String(err) });
     });

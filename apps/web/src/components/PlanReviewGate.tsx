@@ -11,7 +11,7 @@ export function PlanReviewGate({
   disabled,
 }: {
   plan: CapacityPlan;
-  onDecision: (action: "accept_plan" | "reject", comment: string | null) => void;
+  onDecision: (action: "accept_plan" | "reject" | "abandon", comment: string | null) => void;
   disabled?: boolean;
 }) {
   const activeOption = plan.options.find((o) => o.tier === plan.recommended_tier) ?? plan.options[0];
@@ -60,10 +60,18 @@ export function PlanReviewGate({
         <button className="btn-ghost" disabled={disabled} onClick={() => onDecision("reject", comment || null)}>
           ↻ Refine with comment
         </button>
+        <button
+          className="btn-ghost text-rose-400 hover:text-rose-300"
+          disabled={disabled}
+          onClick={() => onDecision("abandon", comment || null)}
+        >
+          ⏹ Abandon run
+        </button>
       </div>
       <p className="text-xs text-slate-500">
         "Refine with comment" re-runs the planner with your feedback — refine as many times as you like.
-        "Looks good, finish" closes this run out with a report; it never deploys anything.
+        "Looks good, finish" closes this run out with a report; it never deploys anything. "Abandon run"
+        stops it for good instead, marked as refused rather than accepted.
       </p>
     </div>
   );

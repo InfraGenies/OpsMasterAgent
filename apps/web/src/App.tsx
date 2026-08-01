@@ -123,7 +123,7 @@ export function App() {
   }
 
   async function handleDecision(
-    action: "approve_plan" | "approve" | "reject" | "edit" | "accept_plan",
+    action: "approve_plan" | "approve" | "reject" | "edit" | "accept_plan" | "abandon",
     comment: string | null,
     patch?: Record<string, unknown>
   ) {

@@ -602,7 +602,7 @@ export const EnvironmentSchema = z.object({
 });
 export type EnvironmentRecord = z.infer<typeof EnvironmentSchema>;
 
-export const DecisionActionSchema = z.enum(["approve_plan", "approve", "reject", "edit", "accept_plan"]);
+export const DecisionActionSchema = z.enum(["approve_plan", "approve", "reject", "edit", "accept_plan", "abandon"]);
 export type DecisionAction = z.infer<typeof DecisionActionSchema>;
 
 export const DecisionSchema = z.object({

@@ -11,7 +11,11 @@ export function PlanApprovalGate({
   disabled,
 }: {
   plan: CapacityPlan;
-  onDecision: (action: "approve_plan" | "reject" | "edit", comment: string | null, patch?: Record<string, unknown>) => void;
+  onDecision: (
+    action: "approve_plan" | "reject" | "edit" | "abandon",
+    comment: string | null,
+    patch?: Record<string, unknown>
+  ) => void;
   disabled?: boolean;
 }) {
   const activeOption = plan.options.find((o) => o.tier === plan.recommended_tier) ?? plan.options[0];
@@ -96,11 +100,19 @@ export function PlanApprovalGate({
         <button className="btn-ghost" disabled={disabled} onClick={() => setEditing((v) => !v)}>
           ✎ Edit parameters
         </button>
+        <button
+          className="btn-ghost text-rose-400 hover:text-rose-300"
+          disabled={disabled}
+          onClick={() => onDecision("abandon", comment || null)}
+        >
+          ⏹ Abandon run
+        </button>
       </div>
       <p className="text-xs text-slate-500">
         Approving locks in this plan and moves to generating infrastructure code — you'll get a second,
         separate approval before anything actually deploys. Rejecting with a comment re-runs the planner
-        with your feedback; iterate as many times as you like.
+        with your feedback; iterate as many times as you like. Abandoning stops the run for good — nothing
+        more will happen without starting a new request.
       </p>
     </div>
   );

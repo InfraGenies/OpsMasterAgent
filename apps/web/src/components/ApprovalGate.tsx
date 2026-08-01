@@ -13,7 +13,7 @@ export function ApprovalGate({
 }: {
   iac: IaCPayload;
   policy?: PolicyReport | null;
-  onDecision: (action: "approve" | "reject", comment: string | null) => void;
+  onDecision: (action: "approve" | "reject" | "abandon", comment: string | null) => void;
   disabled?: boolean;
 }) {
   const unresolvedBlocking = policy?.findings.filter(
@@ -77,10 +77,18 @@ export function ApprovalGate({
         <button className="btn-danger" disabled={disabled} onClick={() => onDecision("reject", comment || null)}>
           ✕ Reject with comment
         </button>
+        <button
+          className="btn-ghost text-rose-400 hover:text-rose-300"
+          disabled={disabled}
+          onClick={() => onDecision("abandon", comment || null)}
+        >
+          ⏹ Abandon run
+        </button>
       </div>
       <p className="text-xs text-slate-500">
         This is the final gate before deployment — the plan itself was already approved in the previous
-        step. Rejecting here sends it back for plan re-approval with your feedback.
+        step. Rejecting here sends it back for plan re-approval with your feedback. Abandoning stops the
+        run for good — nothing more will happen without starting a new request.
       </p>
     </div>
   );

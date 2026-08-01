@@ -309,6 +309,17 @@ estimate" sections (see `AGENTS_AND_SKILLS.md`); rendered at the approval gate b
 `web/src/components/CapacityPlanView.tsx`. See `USE_CASES.md` UC-13 for a worked example (a 3-developer
 startup request) with the exact captured field values.
 
+A tenth addition: an explicit **`abandon` decision action** (`DecisionActionSchema` in
+`packages/shared/src/contracts.ts`, handled in `orchestrator/pipeline.ts: submitDecision`), available at
+every approval gate alongside `reject`. `reject` was ambiguous in practice — it always loops back through
+another planner LLM call and returns to the same gate, even with no comment, so a reviewer who wanted a run
+to just stop had no way to say so; the run instead sat in `running` for however long that LLM call took
+(minutes, on the Enterprise Architecture Advisor path) before landing back at a gate nobody meant to revisit.
+`abandon` skips the planner and goes straight to the same `refuseRun` path an infeasible plan or a timed-out
+gate already use — `RunStatus="refused"`, refusal report generated immediately, no further LLM calls. UI:
+an "Abandon run" button on `PlanApprovalGate.tsx`, `ApprovalGate.tsx`, and `PlanReviewGate.tsx`. See
+`04-approval-gate.md`'s "Abandon" section.
+
 ## Where each spec agent lives in code
 
 | Spec file | Code |
@@ -320,7 +331,7 @@ startup request) with the exact captured field values.
 | `02c-compliance-check.md` | `apps/server/src/nodes/complianceCheck.ts` + `enterpriseRulesEngine.ts` (deterministic, no prompt file — no LLM call), pricing in `templates/enterpriseCatalog.ts`, wired into `orchestrator/pipeline.ts` alongside `readiness_check`, UI: `web/src/components/ComplianceReportView.tsx` — see "eighth addition" above |
 | `03-iac-generator.md` | `apps/server/src/nodes/iacGenerator.ts`, templates in `templates/catalog.ts` (compose) + `templates/terraformCatalog.ts` (AWS, see "seventh addition" above), prompt at `prompts/03-iac-generator.md`, skills at `skills/{writing-compose-iac,writing-terraform-iac,novel-requirement-reasoning}.md` |
 | `03b-policy-validator.md` | `apps/server/src/nodes/policyValidator.ts` (deterministic, no prompt file — no LLM call), self-correction loop lives in `orchestrator/pipeline.ts: reachApprovalGate`, UI: `web/src/components/PolicyReportView.tsx` |
-| `04-approval-gate.md` | `orchestrator/pipeline.ts` (`reachPlanApprovalGate` = Gate 1, `reachApprovalGate` = Gate 2, `submitDecision`, timeout), UI: `web/src/components/PlanApprovalGate.tsx` (Gate 1), `ApprovalGate.tsx` (Gate 2) |
+| `04-approval-gate.md` | `orchestrator/pipeline.ts` (`reachPlanApprovalGate` = Gate 1, `reachApprovalGate` = Gate 2, `submitDecision`, timeout, `abandon` handling — see "tenth addition" above), UI: `web/src/components/PlanApprovalGate.tsx` (Gate 1), `ApprovalGate.tsx` (Gate 2) |
 | *(not in spec — see "sixth addition" above)* | `apps/server/src/nodes/build.ts` + `buildRegistry.ts` (deterministic, no prompt file — no LLM call beyond the planner's sentinel choice), wired into `orchestrator/pipeline.ts: runDeployThroughReport` right before `deploy` |
 | `05-deploy-agent.md` | `apps/server/src/nodes/deploy.ts`, `commandAllowList.ts` |
 | `06-verify-agent.md` | `apps/server/src/nodes/verify.ts` |
