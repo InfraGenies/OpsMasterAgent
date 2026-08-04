@@ -18,7 +18,7 @@ import { isMockMode } from "../llm/client.js";
 import { loadPrompt } from "../llm/promptLoader.js";
 import { loadSkill } from "../llm/skillLoader.js";
 import { runLLMJson } from "../llm/runLLMJson.js";
-import { estimateEcsFargateMonthlyCost, estimateEksMonthlyCost } from "../pricing/awsRateTable.js";
+import { estimateAwsServicesMonthlyCost, estimateEcsFargateMonthlyCost, estimateEksMonthlyCost } from "../pricing/awsRateTable.js";
 import { estimateMonthlyCost } from "../pricing/rateTable.js";
 import { checkSandboxLimits, mergeCapacityPlan } from "./planMerge.js";
 import {
@@ -65,7 +65,7 @@ function optionShapeForTier(tier: "economy" | "high_availability"): string {
 }
 
 /** Extracted so both the generic schema shape and enterprise Pass 1 can reference the same grammar. */
-const ARCHITECTURE_RECOMMENDATION_SHAPE = `{"archetype": "solo_ecs_fargate" | "team_ecs_fargate_ha" | "scale_up_eks" | "enterprise_eks_landing_zone", "archetype_reasoning": "string", "criticality_score": number, "criticality_band": "low" | "medium" | "high" | "very_high", "criticality_reasoning": "string", "managed_controls": [{"name": "string", "category": "network" | "identity" | "detection" | "data_protection" | "dr_ha" | "compliance" | "cost_governance", "triggered_by": "archetype" | "criticality" | "compliance_overlay", "reasoning": "string", "compliance_tags": ["string"], "estimated_cost_usd_monthly": number, "terraform_bundle_template_id": "string | null"}], "compliance_overlay": ["pci_dss" | "hipaa" | "soc2" | "none", "... one entry per compliance_targets value in enterprise_context, NOT objects"], "total_controls_cost_usd_monthly": number, "alternatives_considered": [{"option": "string", "pros": "string", "cons": "string", "rejected_because": "string | null"}], "client_classification": "string", "enterprise_context": "<copy of the input PlanRequest.enterprise_context, verbatim>"}`;
+const ARCHITECTURE_RECOMMENDATION_SHAPE = `{"archetype": "solo_ecs_fargate" | "team_ecs_fargate_ha" | "scale_up_eks" | "enterprise_eks_landing_zone", "archetype_reasoning": "string", "criticality_score": number, "criticality_band": "low" | "medium" | "high" | "very_high", "criticality_reasoning": "string", "managed_controls": [{"name": "string", "category": "network" | "identity" | "detection" | "data_protection" | "dr_ha" | "compliance" | "cost_governance" | "auth" | "cicd" | "autoscaling" | "monitoring" | "resilience", "triggered_by": "archetype" | "criticality" | "compliance_overlay", "reasoning": "string", "compliance_tags": ["string"], "estimated_cost_usd_monthly": number, "terraform_bundle_template_id": "string | null"}], "compliance_overlay": ["pci_dss" | "hipaa" | "soc2" | "none", "... one entry per compliance_targets value in enterprise_context, NOT objects"], "total_controls_cost_usd_monthly": number, "alternatives_considered": [{"option": "string", "pros": "string", "cons": "string", "rejected_because": "string | null"}], "client_classification": "string", "enterprise_context": "<copy of the input PlanRequest.enterprise_context, verbatim>"}`;
 
 const SCHEMA_SHAPE = `{
   "request_id": "string",
@@ -463,7 +463,23 @@ function mockPlanner(planRequest: PlanRequest, humanFeedback?: string): Capacity
   // an unrelated monitoring-tool placeholder. "monitoring"/"uptime"/"status page" are specific
   // enough on their own to still catch real monitoring-tool requests, including ones that also
   // happen to say "dashboard" (e.g. "monitoring dashboard" already matches on "monitoring").
-  if (/\b(monitoring|uptime|status page)\b/.test(rawLower) && !planRequest.repo_url) {
+  // UC-15/UC-16 (agent-md-files/USE_CASES.md): standalone BUILD_REGISTRY
+  // entries with no db/pairing (nodes/buildRegistry.ts) — checked ahead of
+  // every other branch below so their specific wording ("vite"/"hostname")
+  // wins over the generic nodejs18-default-to-RealWorld-pair fallback a
+  // couple branches down, which would otherwise claim any request whose
+  // runtime resolves to nodejs18 with no repo_url given.
+  if (/\bvite\b/.test(rawLower) && !planRequest.repo_url) {
+    const entry = BUILD_REGISTRY["vite-react-frontend"];
+    image = BUILD_SENTINEL_PREFIX + "vite-react-frontend";
+    appPort = entry.containerPort;
+    runtimeNote = `${entry.displayName} (built from source, no repo given so this known static-frontend reference app is used)`;
+  } else if (/\bhostname\b/.test(rawLower) && !planRequest.repo_url) {
+    const entry = BUILD_REGISTRY["nginx-hello"];
+    image = BUILD_SENTINEL_PREFIX + "nginx-hello";
+    appPort = entry.containerPort;
+    runtimeNote = `${entry.displayName} (built from source, no repo given so this known live-container-proof reference app is used)`;
+  } else if (/\b(monitoring|uptime|status page)\b/.test(rawLower) && !planRequest.repo_url) {
     image = "louislam/uptime-kuma:1";
     appPort = 3001;
     appVolume = true;
@@ -793,6 +809,28 @@ async function runEnterprisePlanner(
   };
 }
 
+/**
+ * A real LLM call does its own cost arithmetic in prose (per
+ * skills/sizing-workloads.md's rate table) rather than running deterministic
+ * code — confirmed live: the exact same request produces a different
+ * estimated_cost_usd_monthly across repeated real-mode runs, since the model
+ * resamples the calculation each time instead of computing it once. Mock
+ * mode was never affected (mockPlanner already calls estimateMonthlyCost/
+ * estimateAwsServicesMonthlyCost directly), so this only recomputes cost for
+ * real (non-mocked) results — same "backfill a field the real LLM proved
+ * unreliable at" pattern already used below for architecture_recommendation's
+ * archetype. estimateAwsServicesMonthlyCost is generic over whatever
+ * services array it's given (priced by each service's own managed_service/
+ * cpu/memory/multi_az fields, not a fixed lookup table), so a service the
+ * model adds that wasn't seen before still gets priced for real instead of
+ * silently costing $0.
+ */
+function recomputeOptionCost(option: CapacityPlanOption, target: string): CapacityPlanOption {
+  const cost =
+    target === "aws" ? estimateAwsServicesMonthlyCost(option.services) : estimateMonthlyCost(option.services, option.storage);
+  return { ...option, estimated_cost_usd_monthly: cost.totalUsdMonthly, cost_breakdown: cost.breakdown, cost_basis: "rate_table" };
+}
+
 export async function runPlanner(
   planRequest: PlanRequest,
   existingPlan: CapacityPlan | null,
@@ -825,6 +863,16 @@ export async function runPlanner(
       mock: () => mockPlanner(planRequest, humanFeedback),
       node: "planner",
     });
+
+    if (!result.mocked) {
+      result = {
+        ...result,
+        value: {
+          ...result.value,
+          options: result.value.options.map((opt) => recomputeOptionCost(opt, planRequest.constraints.target)),
+        },
+      };
+    }
   }
 
   let plan = result.value;

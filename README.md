@@ -106,6 +106,10 @@ allow-list + rollback code path executes correctly; it just isn't a live contain
 | UC-7 (modify) | Deploy UC-1 first, then: "Add a Redis cache to the staging environment we just created and wire the app to it." | for real deploy |
 | UC-8 (refusal) | "Provision production with 50,000 req/s and five-nines availability." | no — refused before any template is rendered |
 | UC-8 (rollback) | Approve any plan without Docker Desktop running | no — this **is** the rollback demo |
+| UC-9 (AWS, plan-only — default) | "Deploy the retail-store-sample-app to AWS for a staging environment..." | no — `terraform plan` only |
+| UC-9 (AWS, real apply) | Same request, with `ALLOW_AWS_APPLY=true` set (demo machine only) | needs `terraform` CLI + AWS credentials — see the eleventh addition below |
+| UC-15 (static frontend) | "Spin up a dev environment for a static React frontend built with Vite, no backend needed." | for real deploy |
+| UC-16 (live hostname demo) | "Give me a quick live demo endpoint that shows the container's own hostname on every request." | for real deploy |
 
 Install Docker Desktop per `agent-md-files/INSTALLATION.md` for the live-deploy demos; the pipeline logic
 (intake → planner → IaC → approval → audit) runs and is fully demoable without it.
@@ -125,8 +129,11 @@ per demo use case (see `agent-md-files/USE_CASES.md` for the full scenario descr
 | UC-6 | Kubernetes / Minikube | Not built — scope cut, see [Architecture decisions](#architecture-decisions) |
 | UC-7 | Modify existing environment | Working end-to-end (plan merge + diff view); manual UI demo |
 | UC-8 | Refusal + rollback (responsible-AI) | Working end-to-end; refusal path exercised by `npm run smoke`, rollback is a manual no-Docker demo |
-| UC-9 | AWS/Terraform multi-tier costing | Runnable, plan-only (`terraform init`/`validate`/`plan`; `apply`/`destroy` are not in the allow-list); exercised by `npm run smoke` |
+| UC-9 | AWS/Terraform multi-tier costing | Runnable, plan-only by default (`terraform init`/`validate`/`plan`); exercised by `npm run smoke`. `ALLOW_AWS_APPLY=true` (demo-machine-only, off everywhere else) additionally allows a real `apply`/`destroy` — see the eleventh addition below |
 | UC-13 | Scoping narrative + turnaround estimate (3-developer startup) | Working end-to-end in mock mode; manual UI demo (not in `npm run smoke`) |
+| UC-14 | AWS single container + ALB (aws-copilot-sample) | `BUILD_REGISTRY` entry wired (docker-compose path runnable); real AWS Fargate+ALB still needs a hand-rolled Terraform template (no bundled module to wrap, unlike UC-9) — see `USE_CASES.md` UC-14. Not in `npm run smoke` |
+| UC-15 | Static frontend, no backend/DB (vite-react-docker) | Working via docker-compose (`compose-single-v1`); proves the build-sentinel path generalizes beyond the UC-1/UC-2 RealWorld pair. Not in `npm run smoke` — manual UI demo |
+| UC-16 | Live hostname demo, subfolder Dockerfile (nginx-hello) | Working via docker-compose; first build-sentinel entry whose Dockerfile isn't at the repo root (`BuildRegistryEntry.dockerfileSubdir`). Not in `npm run smoke` — manual UI demo |
 | Enterprise Architecture Advisor mode | `compliance_check` + managed-controls reasoning (PCI-DSS payment platform, solo MVP, enterprise rescale, and one held-out generalization scenario) | Working; exercised by 4 scenarios in `npm run smoke` beyond the numbered UC set |
 
 Two of the rows above (UC-9's AWS/Terraform path and Enterprise Architecture Advisor mode) are real, working
@@ -158,6 +165,55 @@ stand-in that follows the same sizing rules and template-selection logic describ
 (`apps/server/src/nodes/*.ts`, the `mock*` functions). This is what the smoke test runs under. It's meant
 for offline development and CI, not the real demo — flip on a real `ANTHROPIC_API_KEY` for judges to see
 the actual LLM reasoning (shown verbatim in the audit timeline either way).
+
+## Deploying to AWS
+
+Terraform + a GitHub Actions pipeline to self-host this app (not to be confused with
+`apps/server/src/templates/terraformCatalog.ts`, which is IaC *this product generates for end users* who
+ask it to deploy something else — those stay deliberately separate) live in [`infra/aws/`](infra/aws/);
+[`infra/aws/README.md`](infra/aws/README.md) is the step-by-step bootstrap runbook. Summary:
+
+**Architecture**: one ECS Fargate task (0.5 vCPU / 1GB) runs a single container — Express serves the
+API/WebSocket (`/api/*`, `/ws`) *and* the built React static files (`apps/web/dist`) with an SPA
+fallback (`apps/server/src/index.ts`), so there's one origin, no CORS, no separate CloudFront/S3. An ALB
+(HTTP only — no custom domain/ACM by default) fronts it on the account's default VPC public subnets; the
+Fargate task gets a public IP directly rather than sitting behind a NAT Gateway (saves ~$32/mo — nothing
+in the container needs a stable private egress path). Supabase is unchanged; only its service-role key
+moves from the local `.env` file to AWS Secrets Manager.
+
+```
+GitHub push to main → GitHub Actions (OIDC, no stored AWS keys)
+  → build+typecheck+smoke → docker build → push to ECR
+  → register new ECS task definition → update ECS service → wait for stability
+                                                    ↓
+                          ALB (public, HTTP) → Fargate task (public subnet, public IP)
+                                                    ↓
+                                        Supabase (unchanged, external)
+```
+
+**CI/CD**: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every PR/push to `main` —
+`npm ci && npm run build && npm run typecheck && npm run smoke -w @ops-master/server` — the smoke script's
+mock mode means this needs zero AWS/Anthropic/Supabase access.
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) runs the same gate, then authenticates to
+AWS via **GitHub OIDC** (no AWS access keys stored in GitHub at all), builds/pushes the image to ECR, and
+rolls out a new ECS task definition, waiting for the service to stabilize.
+
+**Credentials & config**:
+
+| Concern | Where it lives |
+|---|---|
+| Local dev secrets | `apps/server/.env` (gitignored) — unchanged |
+| CI (`ci.yml`) | Nothing — runs in mock mode |
+| GitHub → AWS auth (`deploy.yml`) | GitHub OIDC → IAM role (`infra/aws/iam-oidc.tf`) — no stored AWS keys |
+| `ANTHROPIC_API_KEY` / `AWS_BEARER_TOKEN_BEDROCK` / `SUPABASE_SERVICE_ROLE_KEY` (runtime) | AWS Secrets Manager, injected into the ECS task as `secrets` — never in the image or GitHub |
+| `SUPABASE_URL`, `DEPLOY_TARGET`, `MOCK_DEPLOY`, etc. | Plain env vars in the ECS task definition (not secret) |
+| `ALLOW_AWS_APPLY` | Hardcoded `false` in the ECS task definition — the hosted instance must never `terraform apply`/`destroy` against the AWS account it runs in, same guidance as the rest of this doc |
+| Docker-compose deploy track (UC-1/2/3/4/7/13 etc.) when hosted | Automatically simulated — Fargate has no Docker daemon, and `MOCK_DEPLOY=auto` already detects that and labels those runs `SIMULATED`, exactly like a judge's laptop without Docker Desktop |
+
+**Estimated cost** (`us-east-1`, always-on): Fargate task ~$18/mo + ALB ~$20/mo + Secrets Manager (3
+secrets) ~$1.20/mo + ECR/CloudWatch Logs ~$2/mo ≈ **~$41-45/mo**. `terraform apply -var desired_count=0`
+between demos drops it to just the ALB (~$20/mo); `terraform destroy` drops it to $0. See
+`infra/aws/README.md`'s "Cost control between demos" section.
 
 ## Architecture decisions
 
@@ -319,6 +375,30 @@ to just stop had no way to say so; the run instead sat in `running` for however 
 gate already use — `RunStatus="refused"`, refusal report generated immediately, no further LLM calls. UI:
 an "Abandon run" button on `PlanApprovalGate.tsx`, `ApprovalGate.tsx`, and `PlanReviewGate.tsx`. See
 `04-approval-gate.md`'s "Abandon" section.
+
+An eleventh addition: a **gated real-apply path for the AWS/Terraform format** (`ALLOW_AWS_APPLY`,
+`config.ts`), off by default everywhere — every contributor, judge, and `npm run smoke` sees UC-9's
+existing plan-only behavior with zero change. Set on a demo machine only, it unlocks two additional
+allow-listed commands in `commandAllowList.ts` (`terraform apply ... tfplan` and
+`terraform destroy ...`, both gated behind an `enabled: isAwsApplyEnabled` check on the rule itself, plus
+an always-on read-only `terraform output -json`) and applies to *any* terraform-format `IaCPayload`
+(UC-9's own templates and the Enterprise Architecture Advisor's terraform bundle alike — the gate isn't
+template-specific). `nodes/deploy.ts` applies the exact plan file a human already approved (never a fresh
+unreviewed plan) and resolves the applied endpoint via `terraform output`; `nodes/verify.ts` then health-
+checks that real URL instead of the plan-only bypass (deliberately no load test against it — a freshly
+applied ALB/ECS service under real load is unnecessary risk for a short live demo); `nodes/rollback.ts`
+runs a real `terraform destroy` if build/deploy/verify ever fails afterward — the first time that
+rollback branch is reachable at all (previously dead code, since plan-only `deployOk` was hardcoded
+`true`). Credentials: prefer a named AWS CLI profile (`aws configure --profile ...`, forwarded via the
+`AWS_PROFILE` env var, always in `scrubbedEnv()`'s keep-list since it's a name, not a secret) over raw
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` env vars, which are supported but scoped
+to only the terraform apply/destroy/output spawns (`awsCredentialEnv()`), never the general keep-list.
+Cost-safety teardown: `templates/terraformCatalog.ts`'s `tf-ecs-fargate-v1` (the fast-to-apply economy
+tier — recommended for a live demo; EKS create/destroy each take ~15-20 minutes) now also renders
+`schedule-auto-destroy.ps1`/`cancel-auto-destroy.ps1`, reusing the exact Windows-Task-Scheduler pattern
+`templates/enterpriseCatalog.ts` already had for its own terraform bundle — run the former immediately
+after a successful live apply so a demo environment can't outlive the session even if rollback never
+triggers (a healthy demo has nothing to roll back).
 
 ## Where each spec agent lives in code
 

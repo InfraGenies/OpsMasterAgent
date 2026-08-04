@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import { createServer } from "node:http";
+import path from "node:path";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { env } from "./config.js";
@@ -18,6 +20,16 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.use("/api/runs", runsRouter);
+
+// apps/web/dist only exists in the production container image (built by the
+// root Dockerfile) — a no-op in local dev, where vite serves the UI on :5173.
+const webDist = path.resolve(env.SERVER_ROOT, "..", "web", "dist");
+if (existsSync(webDist)) {
+  app.use(express.static(webDist));
+  app.get(/.*/, (_req, res) => {
+    res.sendFile(path.join(webDist, "index.html"));
+  });
+}
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof HttpError) {

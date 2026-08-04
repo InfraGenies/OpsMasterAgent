@@ -1,6 +1,6 @@
 # Installation & Environment Setup (Windows) — Ops Master Agent
 
-Owner: InfraGenies · File the Docker Desktop IS request on **Day 1** — it is the long pole.
+Owner: InfraGenies · File the Docker Desktop IS request **first** — it is the long pole.
 
 ---
 
@@ -8,11 +8,11 @@ Owner: InfraGenies · File the Docker Desktop IS request on **Day 1** — it is 
 
 | # | Request | Why | Priority |
 |---|---|---|---|
-| 1 | **Docker Desktop + WSL2 enablement** (local admin on Windows) | All deployments run in containers | 🔴 Day 1 |
-| 2 | Firewall: `registry.npmjs.org` (npm) | React UI deps | 🔴 Day 1 |
-| 3 | Firewall: `pypi.org`, `files.pythonhosted.org` (pip) | LangGraph/FastAPI | 🔴 Day 1 |
-| 4 | Firewall: `docker.io` / `registry-1.docker.io` / `ghcr.io` (image pulls incl. `localstack/localstack`, `grafana/k6`, `postgres`, `redis`, `node`) | Base images | 🔴 Day 1 |
-| 5 | Outbound HTTPS to approved LLM API (Anthropic `api.anthropic.com` or Azure OpenAI endpoint) + API key provisioning | Agent brains | 🔴 Day 1 |
+| 1 | **Docker Desktop + WSL2 enablement** (local admin on Windows) | All deployments run in containers | 🔴 Blocking |
+| 2 | Firewall: `registry.npmjs.org` (npm) | React UI deps | 🔴 Blocking |
+| 3 | Firewall: `pypi.org`, `files.pythonhosted.org` (pip) | LangGraph/FastAPI | 🔴 Blocking |
+| 4 | Firewall: `docker.io` / `registry-1.docker.io` / `ghcr.io` (image pulls incl. `localstack/localstack`, `grafana/k6`, `postgres`, `redis`, `node`) | Base images | 🔴 Blocking |
+| 5 | Outbound HTTPS to approved LLM API (Anthropic `api.anthropic.com` or Azure OpenAI endpoint) + API key provisioning | Agent brains | 🔴 Blocking |
 | 6 | `github.com` clone access (public repos only) | Demo apps | 🟡 |
 | 7 | Terraform CLI install (`releases.hashicorp.com`) | IaC path (optional if compose-only) | 🟡 |
 | 8 | Minikube + kubectl | UC-6 stretch only | 🟢 later |
@@ -66,7 +66,7 @@ pip install fastapi "uvicorn[standard]" langgraph langchain langchain-anthropic 
 # If using Azure OpenAI instead: pip install langchain-openai
 ```
 
-`requirements.txt` (freeze on Day 2):
+`requirements.txt`:
 
 ```
 fastapi
@@ -152,7 +152,7 @@ git clone https://github.com/GoogleCloudPlatform/microservices-demo    # UC-6 on
 
 ---
 
-## 6. Verification checklist (run before Day 3)
+## 6. Verification checklist (run before the first live demo)
 
 - [ ] `docker run hello-world` succeeds without admin prompt
 - [ ] `pip install fastapi` succeeds from corporate network

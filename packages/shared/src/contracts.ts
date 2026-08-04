@@ -77,6 +77,16 @@ export const ManagedControlCategorySchema = z.enum([
   "dr_ha",
   "compliance",
   "cost_governance",
+  /** End-user/application auth (Cognito, OAuth/OIDC) — distinct from "identity" (AWS account/workforce IAM). */
+  "auth",
+  /** CI/CD pipeline (build/test/deploy automation) recommended for the archetype. */
+  "cicd",
+  /** Live scaling mechanism (ECS Service Auto Scaling, EKS Cluster Autoscaler/Karpenter) — distinct from the sandbox's narrative-only scaling_strategy. */
+  "autoscaling",
+  /** Observability: metrics/alarms/dashboards/tracing, not security detection (see "detection" for GuardDuty/Security Hub). */
+  "monitoring",
+  /** Application-level error handling: retries, dead-letter queues, circuit breakers — distinct from "dr_ha" (infrastructure failover). */
+  "resilience",
 ]);
 export type ManagedControlCategory = z.infer<typeof ManagedControlCategorySchema>;
 

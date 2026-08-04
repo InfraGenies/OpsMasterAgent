@@ -46,6 +46,18 @@ export const env = {
   // Skip the autocannon load test inside verify (health checks still run).
   SKIP_LOAD_TEST: bool(process.env.SKIP_LOAD_TEST, false),
 
+  // UC-9 AWS/Terraform path: false (default) keeps that path permanently
+  // plan-only (terraform init/validate/plan only — matches every other
+  // environment and the smoke test). true additionally allows terraform
+  // apply/destroy/output against a REAL AWS account — demo-machine-only, see
+  // nodes/commandAllowList.ts: isAwsApplyEnabled(). Never enable this for a
+  // judge-facing or CI run.
+  ALLOW_AWS_APPLY: bool(process.env.ALLOW_AWS_APPLY, false),
+  // Optional named AWS CLI profile (~/.aws/credentials) for the real-apply
+  // path above; leave blank to use the default credential chain. Just a
+  // profile name, not a secret.
+  AWS_PROFILE: process.env.AWS_PROFILE ?? "",
+
   APPROVAL_TIMEOUT_MINUTES: Number(process.env.APPROVAL_TIMEOUT_MINUTES ?? 30),
 
   SERVER_ROOT,

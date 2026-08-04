@@ -1,0 +1,16 @@
+node_modules
+**/node_modules
+**/dist
+apps/server/deployments
+apps/server/data
+apps/web/.vite
+.env
+.env.local
+apps/server/.env
+apps/server/.env.local
+.git
+.run
+*.log
+repo-scrub-test
+infra
+.github

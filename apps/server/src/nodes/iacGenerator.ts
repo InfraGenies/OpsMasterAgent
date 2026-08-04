@@ -340,13 +340,16 @@ export async function runIacGenerator(input: IacGeneratorInput): Promise<IacGene
         { command: `git checkout ${entry.commitSha}`, cwd: cloneDir }
       );
 
-      if (entry.pairedWith === null) {
-        // Primary/backend entry (today: realworld-node-express) — the only
-        // shape that needs a db + host-side build/migrate today. If a future
-        // registry entry needs the same, this condition is the one place to
-        // revisit; deliberately not a new BuildRegistryEntry field while
-        // there are still only 2 entries total ("widen from 1 to exactly 2,
-        // no more").
+      // Where the `docker build` step actually runs — the clone dir itself,
+      // or that clone dir's dockerfileSubdir when the repo's Dockerfile isn't
+      // at its root (today: nginx-hello, whose Dockerfile lives in
+      // NGINX-Demos's nginx-hello/ subfolder). build.ts's isKnownCwd() only
+      // accepts this exact value, derived from the same closed registry.
+      const buildCwd = entry.dockerfileSubdir ? `${cloneDir}/${entry.dockerfileSubdir}` : cloneDir;
+
+      if (entry.needsDatabase) {
+        // Primary/backend entry needing a db + host-side build/migrate
+        // (today: realworld-node-express only).
         const db = dbService(renderPlan);
         if (!db) {
           return {
@@ -382,14 +385,14 @@ export async function runIacGenerator(input: IacGeneratorInput): Promise<IacGene
         cloneAndBuildSteps.push(
           { command: "npm ci", cwd: cloneDir },
           { command: "npm run build", cwd: cloneDir },
-          { command: `docker build -t ${localTag} .`, cwd: cloneDir }
+          { command: `docker build -t ${localTag} .`, cwd: buildCwd }
         );
         dbBringupAndMigrateSteps.push(
           { command: `docker compose -p ${input.projectName} up -d --wait ${db.name}`, cwd: "deployment" },
           { command: "npx prisma migrate deploy", cwd: cloneDir, env: { DATABASE_URL: hostDatabaseUrl } }
         );
-        if (entry.dockerfileOverride) dockerfileOverrideMap[cloneDir] = entry.dockerfileOverride;
-      } else {
+        if (entry.dockerfileOverride) dockerfileOverrideMap[buildCwd] = entry.dockerfileOverride;
+      } else if (entry.pairedWith !== null) {
         // Paired entry (today: realworld-react-frontend) — its own build
         // (npm install + npm run build) happens entirely INSIDE its
         // multi-stage Dockerfile, not as separate host-side steps like the
@@ -412,13 +415,22 @@ export async function runIacGenerator(input: IacGeneratorInput): Promise<IacGene
           };
         }
         const backendHostPort = hostPortFor(renderPlan, backendService.name, backendEntry.containerPort);
-        cloneAndBuildSteps.push({ command: `docker build -t ${localTag} .`, cwd: cloneDir });
+        cloneAndBuildSteps.push({ command: `docker build -t ${localTag} .`, cwd: buildCwd });
         if (entry.dockerfileOverride) {
-          dockerfileOverrideMap[cloneDir] = entry.dockerfileOverride.replace(
+          dockerfileOverrideMap[buildCwd] = entry.dockerfileOverride.replace(
             FRONTEND_API_ROOT_PLACEHOLDER,
             `http://localhost:${backendHostPort}/api`
           );
         }
+      } else {
+        // Standalone entry (vite-react-frontend, nginx-hello,
+        // aws-copilot-sample): no db, no pairing, no host-side build steps —
+        // the repo's own Dockerfile is self-sufficient (either a static-file
+        // COPY, or, for vite-react-frontend, a build stage that does its own
+        // npm install/build inside the image). Just clone + checkout (already
+        // pushed above) + docker build.
+        cloneAndBuildSteps.push({ command: `docker build -t ${localTag} .`, cwd: buildCwd });
+        if (entry.dockerfileOverride) dockerfileOverrideMap[buildCwd] = entry.dockerfileOverride;
       }
     }
 

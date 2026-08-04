@@ -803,6 +803,7 @@ async function runDeployThroughReport(requestId: string): Promise<void> {
     onLog: (line) => broadcastEvent("log_line", requestId, "verify", line),
     forceFail: /\b(demo-fail|wrong (db )?password)\b/i.test(planRequest.raw_text),
     terraformDeployDetail: payload.format === "terraform" ? deployOutcome.detail : undefined,
+    terraformEndpoint: payload.format === "terraform" ? deployOutcome.terraformEndpoint : undefined,
     mockOverride,
   });
   await logAudit(store, {

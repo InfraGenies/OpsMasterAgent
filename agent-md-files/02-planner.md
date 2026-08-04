@@ -6,7 +6,7 @@
 Turn a `PlanRequest` into a `CapacityPlan`: services, images, CPU/memory, replicas, storage, network — **with reasoning shown**. The visible reasoning grounded in real sizing rules is the team's differentiator; InfraGenies reviews every rule for realism.
 
 ## Input → Output
-`PlanRequest` → `CapacityPlan` (`contracts/CONTRACTS.md` §2) — as of the multi-tier revision, a
+`PlanRequest` → `CapacityPlan` (`CONTRACTS.md` §2) — as of the multi-tier revision, a
 `CapacityPlan` is `{ options: CapacityPlanOption[], recommended_tier, feasible,
 infeasibility_reason }`, not one flat plan. If the ask is infeasible on a laptop sandbox,
 `feasible=false` + `infeasibility_reason` + a scaled-down alternative in the single fallback

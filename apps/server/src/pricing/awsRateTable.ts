@@ -1,3 +1,6 @@
+import type { ServiceSpec } from "@ops-master/shared";
+import { parseCpuCores, parseSizeGi } from "./rateTable.js";
+
 /**
  * Illustrative us-east-1-shaped AWS rates for the UC-9 worked example
  * (agent-md-files/USE_CASES.md) — NOT a live pricing API call, same
@@ -53,6 +56,50 @@ export function estimateEcsFargateMonthlyCost(services: AwsFargateService[], nat
 }
 
 /**
+ * Generic, service-agnostic AWS cost estimator — unlike estimateEcsFargateMonthlyCost/
+ * estimateEksMonthlyCost above (both hardcoded to UC-9's fixed 5-service retail-store
+ * topology), this prices WHATEVER services array it's given by reading each service's own
+ * `managed_service`/`cpu`/`memory`/`replicas`/`multi_az` fields — so a service the planner
+ * adds that this file has never seen before (a new managed_service type aside — see the
+ * fallback below) still gets a real, non-zero cost instead of silently being skipped.
+ * Used to recompute cost deterministically after a real LLM response (planner.ts:
+ * runPlanner/runEnterprisePlanner) for any AWS-target plan outside the fixed UC-9 worked
+ * example, where estimateEcsFargateMonthlyCost's hardcoded "catalog + orders + cart +
+ * checkout" assumptions don't apply.
+ */
+export function estimateAwsServicesMonthlyCost(services: ServiceSpec[]): CostEstimate {
+  const parts: { label: string; usd: number }[] = services.map((s) => {
+    const replicas = s.replicas > 0 ? s.replicas : 1;
+    switch (s.managed_service) {
+      case "rds": {
+        const hourly = s.multi_az ? RDS_T3_SMALL_USD_PER_HOUR * 2 : RDS_T3_MICRO_USD_PER_HOUR;
+        return { label: `${s.name} (RDS, ${s.multi_az ? "Multi-AZ" : "single-AZ"})`, usd: hourly * HOURS_PER_MONTH };
+      }
+      case "dynamodb": {
+        const usd = DYNAMODB_ON_DEMAND_USD_MONTHLY_BASELINE * (s.multi_az ? 1.5 : 1);
+        return { label: `${s.name} (DynamoDB, on-demand${s.multi_az ? " + headroom" : ""})`, usd };
+      }
+      case "elasticache": {
+        const hourly = s.multi_az ? ELASTICACHE_T3_SMALL_USD_PER_HOUR * 2 : ELASTICACHE_T3_MICRO_USD_PER_HOUR;
+        return { label: `${s.name} (ElastiCache, ${s.multi_az ? "2-node replica group" : "single node"})`, usd: hourly * HOURS_PER_MONTH };
+      }
+      default: {
+        // No managed_service (or a future type this switch doesn't know about
+        // yet) — price as generic ECS Fargate compute from cpu/memory/replicas,
+        // exactly like every other stateless service. This is the fallback that
+        // guarantees a brand-new service name is never priced at $0: it always
+        // falls through to real compute math, never a silent skip.
+        const vcpu = parseCpuCores(s.cpu);
+        const gib = parseSizeGi(s.memory);
+        const usd = (vcpu * FARGATE_USD_PER_VCPU_HOUR + gib * FARGATE_USD_PER_GIB_HOUR) * replicas * HOURS_PER_MONTH;
+        return { label: `${s.name} (${replicas}x ${s.cpu} vCPU / ${s.memory}, Fargate)`, usd };
+      }
+    }
+  });
+  return roundedBreakdown(parts);
+}
+
+/**
  * Illustrative flat monthly rates for the Enterprise Architecture Advisor's
  * managed controls (nodes/enterpriseRulesEngine.ts) — same "local rate table,
  * not a live pricing API" scoping as the rest of this file. Organizations,
@@ -81,6 +128,23 @@ const MANAGED_CONTROL_USD_MONTHLY: Record<string, number> = {
   "AWS Organizations": 0,
   "AWS Control Tower": 0,
   "AWS IAM Identity Center": 0,
+  // CI/CD, auth, autoscaling, monitoring, resilience baselines (see
+  // enterpriseRulesEngine.ts's archetypeManagedControls/criticalityControls) —
+  // added so every archetype's recommendation prices these instead of leaving
+  // them as narrative-only text.
+  "GitHub Actions CI/CD (OIDC deploy)": 0, // GitHub-hosted runners, free tier covers a small team's usage
+  "AWS CodePipeline + CodeBuild": 25,
+  "ArgoCD (GitOps, self-hosted on EKS)": 0, // open-source, runs as pods on the existing EKS cluster
+  "Amazon Cognito": 0, // free tier covers up to 10,000 MAUs; usage-based beyond that
+  "Amazon Cognito Advanced Security Features": 50,
+  "ECS Service Auto Scaling (target tracking)": 0, // control-plane feature, no incremental charge beyond the tasks it launches
+  "EKS Cluster Autoscaler": 0, // control-plane feature, no incremental charge beyond the nodes it launches
+  "Karpenter (EKS node autoscaling)": 0,
+  "Amazon CloudWatch (alarms + dashboards)": 10,
+  "AWS X-Ray": 15,
+  "Amazon SQS (dead-letter queue)": 10,
+  "Application Load Balancer": 18, // ~$0.0225/hr base + a modest LCU allowance, illustrative baseline traffic
+  "Amazon RDS/EBS/S3 Encryption at Rest (AWS-managed keys)": 0, // AWS-managed keys are free; only customer-managed AWS KMS (separate line item) has a per-key charge
 };
 
 /** Looks up each control's illustrative flat monthly rate; unrecognized names cost $0 rather than throwing, so a new control can be added to the rules engine before its rate is tabulated here. */

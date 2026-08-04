@@ -746,6 +746,250 @@ resource "aws_route53_record" "primary" {
     evaluate_target_health = true
   }
 }`,
+
+  "Amazon CloudWatch (alarms + dashboards)": () => `# Amazon CloudWatch — baseline alarms + dashboard on top of the app's existing log group
+resource "aws_sns_topic" "alerts" {
+  name = "\${var.environment_name}-alerts"
+}
+
+resource "aws_cloudwatch_metric_alarm" "app_cpu_high" {
+  alarm_name          = "\${var.environment_name}-app-cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/ECS"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 80
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  dimensions = {
+    ClusterName = module.ecs_cluster.cluster_name
+    ServiceName = aws_ecs_service.app.name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "app_memory_high" {
+  alarm_name          = "\${var.environment_name}-app-memory-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "MemoryUtilization"
+  namespace           = "AWS/ECS"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 80
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  dimensions = {
+    ClusterName = module.ecs_cluster.cluster_name
+    ServiceName = aws_ecs_service.app.name
+  }
+}
+
+resource "aws_cloudwatch_dashboard" "app" {
+  dashboard_name = "\${var.environment_name}-dashboard"
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type   = "metric"
+        x      = 0
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/ECS", "CPUUtilization", "ClusterName", module.ecs_cluster.cluster_name, "ServiceName", aws_ecs_service.app.name],
+            ["AWS/ECS", "MemoryUtilization", "ClusterName", module.ecs_cluster.cluster_name, "ServiceName", aws_ecs_service.app.name]
+          ]
+          period = 60
+          stat   = "Average"
+          region = var.aws_region
+          title  = "App CPU / Memory"
+        }
+      }
+    ]
+  })
+}`,
+
+  "AWS X-Ray": () => `# AWS X-Ray — distributed tracing on top of the baseline CloudWatch metrics above
+resource "aws_iam_role_policy_attachment" "xray" {
+  role       = aws_iam_role.ecs_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
+resource "aws_xray_sampling_rule" "app" {
+  rule_name      = "\${var.environment_name}-default"
+  priority       = 1000
+  version        = 1
+  reservoir_size = 1
+  fixed_rate     = 0.05
+  url_path       = "*"
+  host           = "*"
+  http_method    = "*"
+  service_type   = "*"
+  service_name   = "*"
+  resource_arn   = "*"
+}`,
+
+  "Amazon Cognito": () => `# Amazon Cognito — end-user authentication/authorization (sign-up, sign-in, token issuance)
+resource "aws_cognito_user_pool" "this" {
+  name = "\${var.environment_name}-users"
+
+  password_policy {
+    minimum_length    = 12
+    require_uppercase = true
+    require_lowercase = true
+    require_numbers   = true
+    require_symbols   = true
+  }
+
+  user_pool_add_ons {
+    advanced_security_mode = "AUDIT"
+  }
+}
+
+resource "aws_cognito_user_pool_client" "app" {
+  name                = "\${var.environment_name}-app-client"
+  user_pool_id        = aws_cognito_user_pool.this.id
+  generate_secret      = false
+  explicit_auth_flows  = ["ALLOW_USER_SRP_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
+}`,
+
+  "Amazon Cognito Advanced Security Features": () => `# Amazon Cognito Advanced Security — adaptive MFA + compromised-credential detection,
+# escalating the baseline user pool's "AUDIT" mode to full enforcement
+resource "aws_cognito_risk_configuration" "app" {
+  user_pool_id = aws_cognito_user_pool.this.id
+  client_id    = aws_cognito_user_pool_client.app.id
+
+  account_takeover_risk_configuration {
+    actions {
+      low_action {
+        event_action = "MFA_IF_CONFIGURED"
+        notify       = true
+      }
+      medium_action {
+        event_action = "MFA_REQUIRED"
+        notify       = true
+      }
+      high_action {
+        event_action = "MFA_REQUIRED"
+        notify       = true
+      }
+    }
+  }
+
+  compromised_credentials_risk_configuration {
+    actions {
+      event_action = "BLOCK"
+    }
+  }
+}`,
+
+  "ECS Service Auto Scaling (target tracking)": () => `# ECS Service Auto Scaling — target-tracking policy instead of a fixed desired_count
+resource "aws_appautoscaling_target" "app" {
+  max_capacity       = var.desired_count * 4
+  min_capacity       = var.desired_count
+  resource_id        = "service/\${module.ecs_cluster.cluster_name}/\${aws_ecs_service.app.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "app_cpu" {
+  name               = "\${var.environment_name}-cpu-target-tracking"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.app.resource_id
+  scalable_dimension = aws_appautoscaling_target.app.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.app.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+    target_value       = 70
+    scale_in_cooldown  = 120
+    scale_out_cooldown = 60
+  }
+}`,
+
+  "EKS Cluster Autoscaler": () => `# EKS Cluster Autoscaler — illustrative IAM role for the autoscaler pod (IRSA); the
+# controller itself is installed via the cluster-autoscaler Helm chart, not shown here.
+resource "aws_iam_role" "cluster_autoscaler" {
+  name = "\${var.environment_name}-cluster-autoscaler"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Effect    = "Allow"
+      Principal = { Federated = "REPLACE_WITH_EKS_OIDC_PROVIDER_ARN" }
+    }]
+  })
+}`,
+
+  "GitHub Actions CI/CD (OIDC deploy)": () => `# GitHub Actions OIDC federation — lets the repo's CI pipeline assume an AWS role
+# without storing long-lived access keys as GitHub secrets. The workflow YAML itself
+# (build -> push image -> ecs deploy) lives in the application repo's own
+# .github/workflows/, not in this generated Terraform.
+resource "aws_iam_openid_connect_provider" "github_actions" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+}
+
+resource "aws_iam_role" "github_actions_deploy" {
+  name = "\${var.environment_name}-github-actions-deploy"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.github_actions.arn }
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        # Replace OWNER/REPO with the real GitHub repository before use — an
+        # unscoped "repo:*" condition would let any repository assume this role.
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:OWNER/REPO:*"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "github_actions_ecs_deploy" {
+  role       = aws_iam_role.github_actions_deploy.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonECS_FullAccess"
+}`,
+
+  "ArgoCD (GitOps, self-hosted on EKS)": () => `# ArgoCD — illustrative IAM role for GitOps reconciliation against this account;
+# ArgoCD itself is installed as pods on the existing EKS cluster via Helm, not shown here.
+resource "aws_iam_role" "argocd" {
+  name = "\${var.environment_name}-argocd"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Effect    = "Allow"
+      Principal = { Federated = "REPLACE_WITH_EKS_OIDC_PROVIDER_ARN" }
+    }]
+  })
+}`,
+
+  "Amazon SQS (dead-letter queue)": () => `# Amazon SQS — dead-letter queue + retry policy so a downstream failure is captured
+# and replayable instead of silently dropping the request
+resource "aws_sqs_queue" "app_dlq" {
+  name                      = "\${var.environment_name}-dlq"
+  message_retention_seconds = 1209600 # 14 days
+}
+
+resource "aws_sqs_queue" "app" {
+  name                       = "\${var.environment_name}-work-queue"
+  visibility_timeout_seconds = 30
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.app_dlq.arn
+    maxReceiveCount     = 5
+  })
+}`,
 };
 
 /** Which output .tf file a bundle's controls land in — grouping only, the resource content itself comes from CONTROL_SNIPPETS above. */
@@ -757,6 +1001,11 @@ const BUNDLE_FILE_NAME: Record<string, string> = {
   "tf-shield-advanced-v1": "shield-advanced.tf",
   "tf-data-aurora-global-v1": "aurora-global.tf",
   "tf-dns-failover-v1": "dns-failover.tf",
+  "tf-monitoring-v1": "monitoring.tf",
+  "tf-auth-v1": "auth.tf",
+  "tf-autoscaling-v1": "autoscaling.tf",
+  "tf-cicd-v1": "cicd.tf",
+  "tf-resilience-v1": "resilience.tf",
 };
 
 /**

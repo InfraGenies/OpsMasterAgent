@@ -112,13 +112,85 @@ function complianceControl(
   return control(name, category, "compliance_overlay", reasoning, terraformBundleTemplateId, complianceTags);
 }
 
+/** ECS archetypes (solo/team) vs. EKS archetypes (scale_up/enterprise) — decides which concrete autoscaling/CI-CD mechanism the baseline controls below recommend. */
+function computePlatform(archetype: PlatformArchetype): "ecs" | "eks" {
+  return archetype === "solo_ecs_fargate" || archetype === "team_ecs_fargate_ha" ? "ecs" : "eks";
+}
+
+/**
+ * Controls every archetype gets regardless of criticality/compliance — these were previously
+ * missing entirely for solo/team (archetypeManagedControls returned []), which meant a plain
+ * request with no compliance/criticality signal got zero load-balancing, encryption, monitoring,
+ * auth, autoscaling, or CI/CD recommendation at all. Load balancing and baseline encryption are
+ * priced at $0/null-bundle (already provisioned by the base compute module / included in the
+ * underlying service's own cost) — they exist here for reasoning/cost-breakdown visibility, not
+ * because they're a separate purchase.
+ */
+function baselineManagedControls(archetype: PlatformArchetype): ManagedControl[] {
+  const platform = computePlatform(archetype);
+  return [
+    archetypeControl(
+      "Application Load Balancer",
+      "network",
+      "Every internet-facing workload needs load-balanced, health-checked routing across replicas/AZs — rendered as part of the base compute layer's Terraform, priced here (base hourly rate + a modest LCU allowance) so it's visible in cost_breakdown instead of only implied.",
+      null
+    ),
+    archetypeControl(
+      "Amazon RDS/EBS/S3 Encryption at Rest (AWS-managed keys)",
+      "data_protection",
+      "Encryption at rest is enabled by default at every criticality level using AWS-managed keys; customer-managed keys (AWS KMS, priced separately) are only added once criticality crosses into the high band.",
+      null
+    ),
+    archetypeControl(
+      "Amazon CloudWatch (alarms + dashboards)",
+      "monitoring",
+      "Baseline observability (CPU/memory/error-rate alarms plus a dashboard) is required at every scale — the archetype's log group already exists; this adds alarms and a dashboard on top of it.",
+      "tf-monitoring-v1"
+    ),
+    archetypeControl(
+      "Amazon Cognito",
+      "auth",
+      "A real application needs end-user authentication/authorization (sign-up, sign-in, token issuance) — Cognito is the managed default so no team has to build and operate its own auth service.",
+      "tf-auth-v1"
+    ),
+    platform === "ecs"
+      ? archetypeControl(
+          "ECS Service Auto Scaling (target tracking)",
+          "autoscaling",
+          "An ECS Fargate service should scale on a target-tracking policy (e.g. CPU or ALB request count per target) rather than a fixed task count, so a load spike above baseline is handled automatically instead of a human redeploying with a bigger desired_count.",
+          "tf-autoscaling-v1"
+        )
+      : archetypeControl(
+          "EKS Cluster Autoscaler",
+          "autoscaling",
+          "An EKS node group should scale via Cluster Autoscaler so pending pods trigger new worker nodes automatically instead of a human resizing the node group by hand.",
+          "tf-autoscaling-v1"
+        ),
+    platform === "ecs"
+      ? archetypeControl(
+          "GitHub Actions CI/CD (OIDC deploy)",
+          "cicd",
+          "Even a solo/small team needs an automated build-test-deploy pipeline rather than manual `docker push`/`terraform apply` from a laptop — GitHub Actions with OIDC federation to AWS avoids storing long-lived AWS access keys in CI.",
+          "tf-cicd-v1"
+        )
+      : archetypeControl(
+          "ArgoCD (GitOps, self-hosted on EKS)",
+          "cicd",
+          "Once several teams are shipping independently onto shared EKS clusters, GitOps (declarative desired-state in git, continuously reconciled by ArgoCD) scales better than every team's own CI pipeline running `kubectl apply` directly.",
+          "tf-cicd-v1"
+        ),
+  ];
+}
+
 function archetypeManagedControls(archetype: PlatformArchetype): ManagedControl[] {
+  const baseline = baselineManagedControls(archetype);
   switch (archetype) {
     case "solo_ecs_fargate":
     case "team_ecs_fargate_ha":
-      return [];
+      return baseline;
     case "scale_up_eks":
       return [
+        ...baseline,
         archetypeControl(
           "AWS Config",
           "compliance",
@@ -128,6 +200,7 @@ function archetypeManagedControls(archetype: PlatformArchetype): ManagedControl[
       ];
     case "enterprise_eks_landing_zone":
       return [
+        ...baseline,
         archetypeControl(
           "AWS Organizations",
           "identity",
@@ -227,9 +300,27 @@ function criticalityControls(band: CriticalityBand, capAtHigh = false): ManagedC
       "Medium+ criticality on an internet-facing workload requires a web application firewall.",
       "tf-security-baseline-v1"
     ),
+    criticalityControl(
+      "Amazon SQS (dead-letter queue)",
+      "resilience",
+      "Medium+ criticality requires a dead-letter queue and retry policy on asynchronous work so a downstream failure is captured and replayable instead of silently dropping the request.",
+      "tf-resilience-v1"
+    ),
   ];
   const high: ManagedControl[] = [
     ...medium,
+    criticalityControl(
+      "AWS X-Ray",
+      "monitoring",
+      "High criticality requires distributed tracing across services to diagnose latency/error incidents quickly, not just aggregate CloudWatch metrics.",
+      "tf-monitoring-v1"
+    ),
+    criticalityControl(
+      "Amazon Cognito Advanced Security Features",
+      "auth",
+      "High criticality requires adaptive MFA and compromised-credential detection on top of baseline Cognito authentication.",
+      "tf-auth-v1"
+    ),
     criticalityControl(
       "AWS Security Hub",
       "compliance",
@@ -444,12 +535,98 @@ const ALTERNATIVES_BY_CONTROL_NAME: Record<string, ArchitectureAlternative[]> = 
       rejected_because: "Route 53 failover meets the stated RTO at materially lower cost; Global Accelerator's instant-failover edge isn't needed to hit a 15-minute RTO.",
     },
   ],
+  "Amazon Cognito": [
+    {
+      option: "Amazon Cognito",
+      pros: "Fully managed, native IAM/API Gateway integration, no separate vendor bill, scales to millions of users.",
+      cons: "Less polished admin UI and fewer out-of-box social/enterprise-SSO connectors than dedicated identity vendors; deeper customization needs Lambda triggers.",
+      rejected_because: null,
+    },
+    {
+      option: "Auth0 / Okta",
+      pros: "Very mature developer experience, extensive pre-built social/enterprise-SSO connectors, strong org-management tooling.",
+      cons: "Per-MAU pricing gets expensive at scale; another vendor relationship and bill outside AWS.",
+      rejected_because: "No stated multi-IdP/enterprise-SSO requirement in this request that would justify the extra cost over Cognito's native AWS integration.",
+    },
+    {
+      option: "Custom-built auth service",
+      pros: "Full control over the auth flow and data model.",
+      cons: "Significant ongoing engineering and security burden (password storage, token rotation, MFA) that a managed service removes entirely.",
+      rejected_because: "Building and operating auth in-house is never the reasonable default when a managed, compliant alternative exists.",
+    },
+  ],
+  "GitHub Actions CI/CD (OIDC deploy)": [
+    {
+      option: "GitHub Actions (OIDC federation to AWS)",
+      pros: "Already where the code lives, no separate CI vendor or bill, OIDC federation avoids storing long-lived AWS keys in CI.",
+      cons: "Concurrency/minutes limits on the free tier once a team grows past a handful of engineers.",
+      rejected_because: null,
+    },
+    {
+      option: "AWS CodePipeline + CodeBuild",
+      pros: "Fully AWS-native, integrates directly with IAM without OIDC federation, one fewer external dependency.",
+      cons: "Weaker local-dev ergonomics and a smaller marketplace of pre-built actions than GitHub Actions.",
+      rejected_because: "No stated requirement to keep the pipeline entirely inside the AWS console; GitHub Actions is simpler for a small team already hosting its code on GitHub.",
+    },
+    {
+      option: "Jenkins (self-hosted)",
+      pros: "Total control and a huge plugin ecosystem.",
+      cons: "Requires standing up, patching, and securing a server yourself — real ongoing operational overhead.",
+      rejected_because: "Self-hosting CI infrastructure isn't justified until a team is large enough to have someone own it.",
+    },
+  ],
+  "ArgoCD (GitOps, self-hosted on EKS)": [
+    {
+      option: "ArgoCD (GitOps)",
+      pros: "Declarative desired-state in git, automatic drift detection and reconciliation — scales well once many teams deploy onto shared clusters.",
+      cons: "Another piece of infrastructure to operate on the cluster itself.",
+      rejected_because: null,
+    },
+    {
+      option: "AWS CodePipeline + CodeBuild driving kubectl/helm",
+      pros: "Fully AWS-native, no extra in-cluster component to run.",
+      cons: "Push-based deploys don't self-heal from manual cluster drift the way GitOps reconciliation does.",
+      rejected_because: "At this org scale, several teams deploying independently benefit more from GitOps's drift-correction than from staying entirely inside CodePipeline.",
+    },
+  ],
+  "EKS Cluster Autoscaler": [
+    {
+      option: "Cluster Autoscaler",
+      pros: "Mature, widely used, works with standard EC2 Auto Scaling Groups.",
+      cons: "Slower scale-out (waits on an ASG launch) and scales at the node-group level rather than matching pending pods' exact shape.",
+      rejected_because: null,
+    },
+    {
+      option: "Karpenter",
+      pros: "Faster scale-out, more flexible bin-packing, provisions the exact instance shapes pending pods need.",
+      cons: "Newer, smaller operational track record than Cluster Autoscaler.",
+      rejected_because: "Cluster Autoscaler's maturity is the safer default absent a stated need for Karpenter's faster scale-out.",
+    },
+  ],
 };
 
-function alternativesForControls(controls: ManagedControl[]): ArchitectureAlternative[] {
+/**
+ * Baseline (archetype-triggered, every-band) controls whose alternatives_considered entry is gated by
+ * criticality — at "low" criticality the obviously-correct choice (Cognito / GitHub Actions / ArgoCD /
+ * Cluster Autoscaler) isn't worth an LLM-style trade-off essay (confirmed against a real "2 developers
+ * building an MVP" request generating a full 3-alternative comparison for an auth service nobody was
+ * debating); once criticality is medium+ the choice can carry real cost/compliance weight and the
+ * comparison earns its keep. The dr_ha/data_protection controls (Aurora Global Database, Shield Advanced,
+ * Route 53 failover) need no equivalent gate — they're criticality-triggered, not archetype-triggered, so
+ * they never appear below the band that already warrants the deeper reasoning.
+ */
+const BASELINE_ALTERNATIVES_GATED_BY_CRITICALITY = new Set([
+  "Amazon Cognito",
+  "GitHub Actions CI/CD (OIDC deploy)",
+  "ArgoCD (GitOps, self-hosted on EKS)",
+  "EKS Cluster Autoscaler",
+]);
+
+function alternativesForControls(controls: ManagedControl[], band: CriticalityBand): ArchitectureAlternative[] {
   const seen = new Set<string>();
   const result: ArchitectureAlternative[] = [];
   for (const c of controls) {
+    if (band === "low" && BASELINE_ALTERNATIVES_GATED_BY_CRITICALITY.has(c.name)) continue;
     const entries = ALTERNATIVES_BY_CONTROL_NAME[c.name];
     if (!entries || seen.has(c.name)) continue;
     seen.add(c.name);
@@ -549,7 +726,7 @@ export function buildArchitectureRecommendation(ctx: EnterpriseContext, capAtHig
     managed_controls: priced,
     compliance_overlay: ctx.compliance_targets,
     total_controls_cost_usd_monthly: cost.totalUsdMonthly,
-    alternatives_considered: alternativesForControls(priced),
+    alternatives_considered: alternativesForControls(priced, band),
     client_classification: deriveClientClassification(ctx, band),
   };
 }
@@ -650,12 +827,8 @@ function buildOneEnterpriseOption(
     feedbackSuffix;
 
   const included_components: ComponentNote[] = [
-    { component: "app", reason: `illustrative ${archetype.replace(/_/g, "-")} workload for this archetype` },
+    { component: "app", reason: `illustrative ${archetype.replace(/_/g, "-")} workload for this archetype, fronted by the Application Load Balancer below across its ${computeSpec.replicas} baseline replica(s)` },
     { component: "db", reason: "managed primary data store assumed for any real business workload" },
-    {
-      component: "Load Balancer (ALB, round-robin)",
-      reason: `fronts the app workload's ${computeSpec.replicas} baseline replica(s), alongside the NAT Gateway networking already priced below`,
-    },
     ...rec.managed_controls.map((c) => ({ component: c.name, reason: c.reasoning })),
   ];
   const skipped_components: ComponentNote[] = [
@@ -784,8 +957,21 @@ const MULTI_REGION_RE = /multi[\s-]?region|cross[\s-]?region|\bdr\b/i;
 const PCI_RE = /pci[\s-]?dss/i;
 const HIPAA_RE = /hipaa/i;
 const SOC2_RE = /soc\s?2/i;
-const PAYMENTS_RE = /\b(payment|fintech|banking)\b/i;
-const HEALTHCARE_RE = /\b(health|medical|hipaa|patient)\b/i;
+/**
+ * Bare "payment"/"health" (the previous versions of these two regexes) false-triggered enterprise_mode —
+ * and the expensive real 2-pass Enterprise Architecture Advisor LLM flow along with it — on completely
+ * ordinary requests like "add a health check endpoint" or "a payment retry queue worker", both of which
+ * are common phrasing in this exact domain, not a signal of an actual payments/healthcare business.
+ * Require a real business-domain phrase instead — this is strictly a precision fix (fewer false
+ * positives); every existing use case's text (see USE_CASES.md/smoke.ts) still matches ("payment
+ * platform", "HIPAA healthcare startup").
+ */
+const PAYMENTS_RE = /\b(payments?\s+(platform|company|processor|gateway|system)|fintech|banking)\b/i;
+// "hipaa" kept (unlike bare "health") — it's a specific, unambiguous acronym in the same precision class
+// as PCI_RE/SOC2_RE, and a request stating only "HIPAA compliant" with no other health-related word still
+// needs industry_domain="healthcare" for scoreCriticality's domain bonus (HIPAA implies healthcare by
+// definition) — see mockExtractEnterpriseContext's industry_domain branch below.
+const HEALTHCARE_RE = /\b(healthcare|medical|patient|hipaa)\b/i;
 
 function parseExpectedUsers(rawText: string): number | null {
   const m = rawText.match(USERS_RE);

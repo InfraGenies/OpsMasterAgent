@@ -28,6 +28,24 @@ export interface BuildRegistryEntry {
    */
   pairedWith: string | null;
   /**
+   * True only for an entry whose build needs a database + host-side
+   * migration step (today: realworld-node-express) — drives iac_generator.ts
+   * down the db-bringup-and-migrate branch instead of treating `pairedWith
+   * === null` alone as "this is a backend that needs a db", which stopped
+   * being a safe assumption once standalone, no-DB build sentinels
+   * (vite-react-frontend, nginx-hello, aws-copilot-sample) were added.
+   */
+  needsDatabase: boolean;
+  /**
+   * Subfolder within the cloned repo that actually contains the Dockerfile
+   * (and is therefore the `docker build` context), or null when it's at the
+   * repo root. Needed for nginx-hello, whose Dockerfile lives at
+   * `nginx-hello/Dockerfile` inside the `nginxinc/NGINX-Demos` monorepo
+   * checkout. build.ts's isKnownCwd() only allows this exact value (derived
+   * from this closed table), never an arbitrary subpath.
+   */
+  dockerfileSubdir: string | null;
+  /**
    * The repo's own Dockerfile only `npm --omit=dev install`s inside the
    * container, so @prisma/client's postinstall generate step has neither
    * the `prisma` CLI (a devDependency, stripped by --omit=dev) nor the
@@ -103,6 +121,8 @@ export const BUILD_REGISTRY: Record<string, BuildRegistryEntry> = {
     containerPort: 3000,
     healthPath: "/api/tags",
     pairedWith: null,
+    needsDatabase: true,
+    dockerfileSubdir: null,
     dockerfileOverride: [
       "FROM node:lts-alpine",
       "WORKDIR /app",
@@ -139,6 +159,8 @@ export const BUILD_REGISTRY: Record<string, BuildRegistryEntry> = {
     containerPort: 80,
     healthPath: "/",
     pairedWith: "realworld-node-express",
+    needsDatabase: false,
+    dockerfileSubdir: null,
     dockerfileOverride: [
       // node:16-alpine, not node:lts-alpine: this repo is react-scripts@1.1.1
       // (2018-era webpack 2/3). Confirmed by actually building it: node:16
@@ -167,6 +189,54 @@ export const BUILD_REGISTRY: Record<string, BuildRegistryEntry> = {
       "EXPOSE 80",
       "",
     ].join("\n"),
+  },
+  // Standalone entries below (source_configuration/new-use-case/0{1,2,3}-fargate-demo-*.md,
+  // catalogued as UC-15/UC-16/UC-14 in agent-md-files/USE_CASES.md): pairedWith: null and
+  // needsDatabase: false, so iac_generator.ts's build-sentinel loop takes the plain
+  // "clone + checkout + docker build, no host build/migrate steps" path — the repo's own
+  // Dockerfile does all the work (either it's a static-file COPY, or, for
+  // vite-react-frontend, the Vite build happens entirely inside the Dockerfile's own
+  // node:18-alpine3.17 build stage).
+  "vite-react-frontend": {
+    key: "vite-react-frontend",
+    displayName: "Vite/React static frontend demo (no DB)",
+    repoUrl: "https://github.com/mattburrell/vite-react-docker.git",
+    // Verified via git clone on 2026-08-01 — re-verify before relying on this if executed much later.
+    commitSha: "5d96169e8712659f60fc47f671cc54f6c4fe9d47",
+    containerPort: 80,
+    healthPath: "/",
+    pairedWith: null,
+    needsDatabase: false,
+    dockerfileSubdir: null,
+    dockerfileOverride: null, // repo's own two-stage Dockerfile is already correct as-is
+  },
+  "nginx-hello": {
+    key: "nginx-hello",
+    displayName: "nginx hello-world demo (live hostname/IP page)",
+    repoUrl: "https://github.com/nginxinc/NGINX-Demos.git",
+    // Verified via git clone on 2026-08-01 — re-verify before relying on this if executed much later.
+    commitSha: "611fa05748a4031841e5607cd3069288b0aa9973",
+    containerPort: 80,
+    healthPath: "/",
+    pairedWith: null,
+    needsDatabase: false,
+    // This repo's Dockerfile lives in the nginx-hello/ subfolder, not the repo root (the checkout
+    // pulls the whole NGINX-Demos monorepo) — see dockerfileSubdir's doc comment above.
+    dockerfileSubdir: "nginx-hello",
+    dockerfileOverride: null, // repo's own Dockerfile is already correct as-is
+  },
+  "aws-copilot-sample": {
+    key: "aws-copilot-sample",
+    displayName: "AWS official Copilot sample service (static nginx page)",
+    repoUrl: "https://github.com/aws-samples/aws-copilot-sample-service.git",
+    // Verified via git clone on 2026-08-01 — re-verify before relying on this if executed much later.
+    commitSha: "2f5a45e5561f0d99e4328eac02d93358d2489d63",
+    containerPort: 80,
+    healthPath: "/",
+    pairedWith: null,
+    needsDatabase: false,
+    dockerfileSubdir: null,
+    dockerfileOverride: null, // repo's own Dockerfile is already correct as-is
   },
 };
 

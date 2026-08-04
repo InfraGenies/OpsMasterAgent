@@ -5,11 +5,21 @@ import { BUILD_REGISTRY } from "./buildRegistry.js";
 import { resolveAllowedCommand, runAllowedCommand } from "./commandAllowList.js";
 import { shouldMockBuild } from "./dockerProbe.js";
 
-/** True iff `cwd` is "deployment" or a "repo-<key>" clone dir for a key that actually exists in BUILD_REGISTRY. iac_generator is the only producer of this field (never the LLM/user), but this is checked again here rather than trusting the schema's regex shape alone — see contracts.ts's cwd doc comment. */
+/**
+ * True iff `cwd` is "deployment", a "repo-<key>" clone dir for a key that actually exists in
+ * BUILD_REGISTRY, or that same clone dir plus the exact `dockerfileSubdir` that registry entry
+ * declares (e.g. "repo-nginx-hello/nginx-hello") — never an arbitrary nested path. iac_generator is
+ * the only producer of this field (never the LLM/user), but this is checked again here rather than
+ * trusting the schema's regex shape alone — see contracts.ts's cwd doc comment.
+ */
 function isKnownCwd(cwd: string): boolean {
   if (cwd === "deployment") return true;
-  const match = /^repo-(.+)$/.exec(cwd);
-  return match !== null && match[1] in BUILD_REGISTRY;
+  const match = /^repo-([^/]+)(?:\/(.+))?$/.exec(cwd);
+  if (match === null) return false;
+  const [, key, subdir] = match;
+  const entry = BUILD_REGISTRY[key];
+  if (!entry) return false;
+  return subdir === undefined ? true : subdir === entry.dockerfileSubdir;
 }
 
 export interface BuildInput {

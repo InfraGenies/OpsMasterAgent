@@ -14,12 +14,13 @@ const USD_PER_GIB_RAM_HOUR = 0.005;
 const USD_PER_GIB_STORAGE_MONTH = 0.1;
 const HOURS_PER_MONTH = 730;
 
-function parseCpuCores(cpu: string): number {
+/** Exported so pricing/awsRateTable.ts's generic per-service estimator can reuse the same cpu/memory parsing instead of duplicating it. */
+export function parseCpuCores(cpu: string): number {
   const n = Number(cpu);
   return Number.isFinite(n) ? n : 1;
 }
 
-function parseSizeGi(size: string): number {
+export function parseSizeGi(size: string): number {
   const match = size.match(/^(\d+(?:\.\d+)?)\s*(Mi|Gi)$/i);
   if (!match) return 0;
   const value = Number(match[1]);

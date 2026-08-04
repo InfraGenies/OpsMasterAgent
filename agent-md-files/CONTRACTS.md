@@ -1,4 +1,4 @@
-# Data Contracts (freeze Day 1 — everything builds against these)
+# Data Contracts (everything builds against these)
 
 All inter-agent messages are one of these four JSON objects. Pydantic models in `backend/models.py` are the source of truth; this file mirrors them for humans.
 
@@ -184,6 +184,30 @@ a weighted score over compliance/domain/scale/RPO/RTO/multi-region signals) adds
 top of whatever archetype was picked. `compliance_targets` layers a third, independent set of mandatory
 controls a framework requires regardless of the other two axes. All three compose into one deduplicated
 `managed_controls` list — see `nodes/enterpriseRulesEngine.ts` for the exact scoring formula and thresholds.
+
+**Baseline controls (every archetype, every band)** — not gated by `criticality_score` at all, added by
+`archetypeManagedControls`/`baselineManagedControls` in `enterpriseRulesEngine.ts` regardless of whether any
+compliance/criticality signal was ever detected: an Application Load Balancer (`network`), encryption at
+rest on AWS-managed keys (`data_protection`, upgraded to customer-managed `AWS KMS` at the `high` band),
+CloudWatch alarms + a dashboard (`monitoring`), Amazon Cognito end-user auth (`auth`), a live autoscaling
+mechanism — ECS Service Auto Scaling for the ECS archetypes, EKS Cluster Autoscaler for the EKS archetypes
+(`autoscaling`) — and a CI/CD pipeline — GitHub Actions (OIDC) for the ECS archetypes, ArgoCD/GitOps for the
+EKS archetypes (`cicd`). These exist so a plain "size me a simple app" business-description request still
+gets a real load-balancing/encryption/monitoring/auth/autoscaling/deploy-pipeline recommendation instead of
+a bare compute footprint — previously the only controls a `low`-criticality/`solo` request ever received
+were whatever `archetypeManagedControls` happened to hardcode per archetype (`[]` for solo/team). Criticality
+still layers its own escalations on top of these: `medium`+ adds an `Amazon SQS` dead-letter queue
+(`resilience` — application-level retry/error-handling, distinct from `dr_ha`'s infrastructure failover);
+`high`+ adds `AWS X-Ray` distributed tracing (`monitoring`) and Cognito Advanced Security Features (`auth`,
+adaptive MFA + compromised-credential detection) on top of the baseline controls above.
+
+`ManagedControlCategory` accordingly has five categories beyond the original seven
+(`network|identity|detection|data_protection|dr_ha|compliance|cost_governance`): `auth` (end-user/application
+authentication — distinct from `identity`, which covers AWS account/workforce IAM), `cicd`, `autoscaling`
+(a *live* scaling mechanism — distinct from `CapacityPlanOption.scaling_strategy`, which stays narrative-only
+everywhere since this sandbox has no live autoscaler to actually wire up), `monitoring` (observability —
+distinct from `detection`, which covers GuardDuty/Security Hub-style security detection), and `resilience`
+(application-level error handling — distinct from `dr_ha`'s infrastructure failover/replication).
 
 ## 3. IaCPayload  (iac_generator → approval gate → deploy)
 

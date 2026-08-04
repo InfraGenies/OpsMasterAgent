@@ -8,3 +8,10 @@ apps/server/data/local-store.json
 *.log
 .DS_Store
 .run/
+
+# Terraform (infra/aws) — state and vars are per-machine/account, never committed
+infra/aws/.terraform/
+infra/aws/*.tfstate
+infra/aws/*.tfstate.*
+infra/aws/terraform.tfvars
+infra/aws/*.tfplan

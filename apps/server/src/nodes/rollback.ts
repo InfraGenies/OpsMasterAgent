@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { IaCPayload, Operation } from "@ops-master/shared";
-import { resolveAllowedCommand, runAllowedCommand } from "./commandAllowList.js";
+import { awsCredentialEnv, isAwsApplyEnabled, resolveAllowedCommand, runAllowedCommand } from "./commandAllowList.js";
 import { shouldMockDeploy } from "./dockerProbe.js";
 
 export interface RollbackInput {
@@ -30,14 +30,36 @@ export interface RollbackOutcome {
  */
 export async function runRollback(input: RollbackInput): Promise<RollbackOutcome> {
   if (input.payload.format === "terraform") {
-    // Plan-only sandbox (UC-9) — nothing was ever applied, so there is
-    // nothing to tear down or restore.
-    input.onLog("[rollback] terraform path is plan-only — nothing was applied, nothing to roll back");
+    if (!isAwsApplyEnabled()) {
+      // Plan-only sandbox (UC-9 default) — nothing was ever applied, so
+      // there is nothing to tear down or restore.
+      input.onLog("[rollback] terraform path is plan-only — nothing was applied, nothing to roll back");
+      return {
+        ok: true,
+        detail: "no-op: terraform path never applies, so there was nothing to roll back",
+        stdout: "",
+        commandExecuted: "n/a",
+      };
+    }
+
+    // ALLOW_AWS_APPLY=true: a real apply may have partially or fully
+    // succeeded before this rollback was triggered (build/deploy/verify
+    // failure) — terraform destroy is safe to run regardless of exactly how
+    // far apply got, since it only ever tears down what's actually in state.
+    const destroyCommand = "terraform destroy -input=false -no-color -auto-approve";
+    const destroyArgv = resolveAllowedCommand(destroyCommand);
+    if (!destroyArgv) {
+      return { ok: false, detail: "internal error: terraform destroy command failed allow-list check", stdout: "", commandExecuted: destroyCommand };
+    }
+    input.onLog("[rollback] ALLOW_AWS_APPLY is on — running a real terraform destroy against AWS");
+    const destroyResult = await runAllowedCommand("terraform", destroyArgv, input.deploymentDir, input.onLog, 900_000, awsCredentialEnv());
     return {
-      ok: true,
-      detail: "no-op: terraform path never applies, so there was nothing to roll back",
-      stdout: "",
-      commandExecuted: "n/a",
+      ok: destroyResult.ok,
+      detail: destroyResult.ok
+        ? "real AWS resources torn down (terraform destroy)"
+        : "terraform destroy itself failed — manual AWS cleanup needed",
+      stdout: destroyResult.output,
+      commandExecuted: destroyCommand,
     };
   }
 

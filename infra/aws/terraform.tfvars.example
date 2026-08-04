@@ -1,0 +1,26 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Nothing in this file is
+# secret — the Supabase URL is public-ish by design (RLS blocks the anon
+# key from every table; the service-role key that actually matters lives in
+# Secrets Manager, populated after `terraform apply`, never here).
+
+aws_region   = "us-east-1"
+project_name = "ops-master-agent"
+
+supabase_url     = "https://your-project.supabase.co"
+bedrock_model_id = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+github_repo           = "CybHackathon-2026/Hi-Tech_INFRAGenies"
+github_deploy_branch   = "main"
+
+# Fargate task sizing — 512/1024 (.5 vCPU/1GB) is the sizing this plan's cost
+# estimate assumes. Bump only if the app actually needs it.
+fargate_cpu    = 512
+fargate_memory = 1024
+
+# 1 = always-on (~$18/mo for the Fargate task on top of the ALB). Set to 0
+# between demos to stop paying for the task; the ALB (~$20/mo) keeps running
+# either way unless you `terraform destroy` entirely.
+desired_count = 1
+
+# image_tag is normally left at its "latest" default locally — GitHub
+# Actions passes the real git-SHA tag via -var on every deploy.

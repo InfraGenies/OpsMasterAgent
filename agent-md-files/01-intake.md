@@ -6,7 +6,7 @@
 Convert a free-text infrastructure request into a validated `PlanRequest` JSON, or reject it with a reason. First line of defence: unsafe, out-of-scope, or nonsensical requests never reach the planner.
 
 ## Input → Output
-Raw user text → `PlanRequest` (see `contracts/CONTRACTS.md` §1) with `feasible_input: true|false`.
+Raw user text → `PlanRequest` (see `CONTRACTS.md` §1) with `feasible_input: true|false`.
 
 ## System prompt (load this verbatim from file in code)
 

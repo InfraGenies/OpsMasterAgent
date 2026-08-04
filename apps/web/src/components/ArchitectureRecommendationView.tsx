@@ -15,6 +15,11 @@ const CATEGORY_LABEL: Record<ManagedControl["category"], string> = {
   dr_ha: "DR / HA",
   compliance: "Compliance",
   cost_governance: "Cost Governance",
+  auth: "Auth",
+  cicd: "CI/CD",
+  autoscaling: "Autoscaling",
+  monitoring: "Monitoring",
+  resilience: "Resilience",
 };
 
 export function ArchitectureRecommendationView({ rec }: { rec: ArchitectureRecommendation }) {

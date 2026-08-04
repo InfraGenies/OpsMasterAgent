@@ -102,4 +102,16 @@ export const USE_CASES: UseCase[] = [
     text: "HIPAA healthcare startup, 5 developers, single-region.",
     status: "supported",
   },
+  {
+    id: "UC-15",
+    label: "Static frontend (Vite)",
+    text: "Spin up a dev environment for a static React frontend built with Vite, no backend needed.",
+    status: "supported",
+  },
+  {
+    id: "UC-16",
+    label: "Live hostname demo",
+    text: "Give me a quick live demo endpoint that shows the container's own hostname on every request.",
+    status: "supported",
+  },
 ];

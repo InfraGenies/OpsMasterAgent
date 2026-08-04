@@ -130,4 +130,4 @@ User NL request
 
 ## Data contracts
 
-Frozen on Day 1 — see [`contracts/CONTRACTS.md`](contracts/CONTRACTS.md). Everyone builds against these; the graph passes only these JSON objects between nodes.
+See [`CONTRACTS.md`](CONTRACTS.md). Everyone builds against these; the graph passes only these JSON objects between nodes.

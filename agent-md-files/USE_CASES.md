@@ -129,7 +129,11 @@ Two short failure scenarios — judges score governance heavily:
 1. **Multi-tier `CapacityPlanOption[]` output** — `nodes/planner.ts` now emits `{ options: CapacityPlanOption[], recommended_tier, ... }` instead of a single flat plan, per the multi-tier planning proposal (`source_configuration/ops-master-agent-enhancements-proposal.md` §2). Every non-AWS UC gets 3 tiers (economy/balanced/high_availability); an `aws`-target request like this one gets exactly the 2 tiers below.
 2. **AWS/Terraform template family** — `templates/terraformCatalog.ts` adds `tf-ecs-fargate-v1` (economy) and `tf-eks-v1` (high_availability), each rendering a root module that fills the repo's own bundled `terraform/ecs/default` / `terraform/eks/default` modules (real input variable names, fetched from the live repo) rather than hand-rolling AWS resources — same "LLM picks a template, backend renders" discipline as compose, extended to `IaCPayload.format: "terraform"`.
 
-**Hard safety boundary:** `commandAllowList.ts` permits `terraform init`/`validate`/`plan` only — `apply`/`destroy` are not in the allow-list at all, so there is no code path from this UC to a real AWS account. "Deploy" always resolves to a plan-only outcome (labeled `SIMULATED` whenever the `terraform` CLI, network access, or AWS credentials aren't available — none of which this app configures by default), matching the existing no-docker `SIMULATED` pattern for the compose path.
+**Default safety boundary:** `commandAllowList.ts` permits `terraform init`/`validate`/`plan` unconditionally — `apply`/`destroy` only match when `ALLOW_AWS_APPLY=true` (off everywhere except an explicitly configured demo machine, see the root README's eleventh addition), so by default there is no code path from this UC to a real AWS account. "Deploy" resolves to a plan-only outcome (labeled `SIMULATED` whenever the `terraform` CLI, network access, or AWS credentials aren't available), matching the existing no-docker `SIMULATED` pattern for the compose path.
+
+**Live-apply demo option:** with `ALLOW_AWS_APPLY=true` and AWS credentials configured (a named CLI profile via `AWS_PROFILE` is the recommended path — `aws configure --profile ...`), a human-approved plan is actually applied to a real AWS account, using the ECS Fargate economy tier (`tf-ecs-fargate-v1`) specifically — it stands up/tears down in minutes, unlike the EKS tier (~15–20 min each way). `verify` then health-checks the real endpoint from `terraform output` (no load test against it — unnecessary risk for a short live demo). Cost-safety: immediately after a successful apply, run the rendered `.\schedule-auto-destroy.ps1` (defaults to 10 min) so the environment is torn down even if the demo forgets to. A failed deploy/verify still triggers a real `terraform destroy` automatically via the normal rollback path.
+
+**Full step-by-step worked example (captured `task_graph` for both tiers, pricing breakdown, wiki/slide-ready):** [`EXAMPLE-AWS-RETAIL-STORE.md`](EXAMPLE-AWS-RETAIL-STORE.md) (`request_id: req-2026-92a7ff79`).
 
 **Worked example — the two costing tiers the multi-tier planner produces for this request (confirmed live, real Anthropic LLM: $141/mo economy, $428/mo high_availability):**
 
@@ -177,6 +181,109 @@ The `balanced` tier renders identically (0 rps stated → sizing floors out at 1
 
 ---
 
+## UC-14 — AWS LIVE-APPLY: single-container Fargate + ALB — aws-copilot-sample-service (fastest real-cloud demo)
+
+| | |
+|---|---|
+| **Repo** | https://github.com/aws-samples/aws-copilot-sample-service (pinned commit `2f5a45e5561f0d99e4328eac02d93358d2489d63`) |
+| **Maintainer** | AWS official (`aws-samples` org), MIT-0 license |
+| **Stack** | Static nginx page (`public.ecr.aws/nginx/nginx:1.19` base image, `COPY index.html` only) — AWS's own reference app for its Copilot CLI "Load Balanced Web Service" tutorial. No database, no build tooling, no env vars — only 3 files in the whole repo (`Dockerfile`, `index.html`, `README.md`) |
+| **NL request** | *"Deploy a simple static web service to AWS behind a load balancer for a demo environment."* |
+| **Deploy target** | Terraform → AWS (ECS Fargate, single task, single AZ) + ALB — `IaCPayload.format: "terraform"`, same family as UC-9's economy tier |
+| **What it proves** | The **fastest possible real-AWS path** through the pipeline: one container, no RDS/DynamoDB/ElastiCache, no application build step beyond `docker build` (the Dockerfile only copies a static file) — stands up and tears down in a couple of minutes, faster than either of UC-9's tiers (5 services + RDS for economy; ~15–20 min each way for the EKS tier). Also the first use case where the IaC agent would need to **hand-roll** VPC/ECS/ALB resources directly, because unlike `retail-store-sample-app` (UC-9) this repo ships no Terraform module of its own to wrap — `templates/terraformCatalog.ts`'s "LLM picks a template, backend renders" discipline has to generate the AWS resources itself instead of filling a bundled module |
+| **Verify** | `curl -I <alb-dns-name>` → expect `HTTP/1.1 200 OK` on `/` |
+
+**Why this repo (from the source review):** of the AWS sample apps considered, this is the only one that
+is (a) AWS-maintained, (b) MIT-0 licensed with zero licensing ambiguity, (c) needs no build-tool dependency
+beyond Docker itself, and (d) pulls its base image from `public.ecr.aws` instead of Docker Hub — removing
+the Docker Hub anonymous-pull rate-limit as a class of demo-day flakiness. Full source review, two manual
+provisioning paths (Copilot CLI vs. raw AWS CLI written to match UC-9's `tf-ecs-fargate-v1` conventions),
+the `BUILD_REGISTRY` wiring, and the cost-safety auto-teardown script live in
+[`source_configuration/new-use-case/03-fargate-demo-aws-copilot-sample-service.md`](../source_configuration/new-use-case/03-fargate-demo-aws-copilot-sample-service.md).
+
+**Status: `BUILD_REGISTRY` wiring done; AWS/Terraform path still manual.** `apps/server/src/nodes/buildRegistry.ts`
+now has an `"aws-copilot-sample"` entry (`pairedWith: null`, `needsDatabase: false`), which is enough for the
+agent to clone/build/deploy this app through its normal **docker-compose** path (e.g. `compose-single-v1`) —
+that gap from the original review is closed. One gap remains, and it's the one that actually matters for
+this UC's "real AWS Fargate + ALB" framing:
+
+1. **A new Terraform template** (e.g. `tf-ecs-fargate-single-v1` in `templates/terraformCatalog.ts`) that
+   hand-rolls VPC/subnets/security group/ECS cluster/task definition/service/ALB for one image — unlike
+   `retail-store-sample-app` (UC-9), this repo has no bundled Terraform module for a template to wrap. This
+   is a materially bigger lift than the `BUILD_REGISTRY` entry (UC-9's own `tf-ecs-fargate-v1`/`tf-eks-v1`
+   only had to *fill* an existing module, never author raw AWS resources from scratch).
+
+Until that template exists, an actual Fargate+ALB endpoint for this app still comes from the manually-run
+Copilot CLI or raw AWS CLI path (source file §2/§3) rather than an NL request the pipeline can
+plan/generate/deploy end-to-end — those sections now include a scheduled, timeout-based auto-teardown step
+(`schedule-ecs-auto-teardown.ps1`, same idea as UC-9's `schedule-auto-destroy.ps1` but for `aws ecs stop-task`
+instead of `terraform destroy`, since this path never goes through Terraform) so a forgotten demo task
+doesn't keep billing.
+
+**Safety, same boundary as UC-9:** once the Terraform template exists, `commandAllowList.ts`'s `apply`/`destroy`
+gating (`ALLOW_AWS_APPLY=true`, off by default) applies unchanged — `init`/`validate`/`plan` run
+unconditionally, nothing touches a real AWS account by default.
+
+---
+
+## UC-15 — STATIC FRONTEND, DEV: Vite/React app with no backend or database
+
+| | |
+|---|---|
+| **Repo** | https://github.com/mattburrell/vite-react-docker (pinned commit `5d96169e8712659f60fc47f671cc54f6c4fe9d47`) |
+| **Maintainer** | Individual dev (Matt Burrell), MIT license |
+| **Stack** | Vite + React, two-stage Dockerfile (Vite build in a `node:18-alpine3.17` stage, static `dist/` served by `nginx` on an `ubuntu` runtime stage) — no backend calls, no env vars, no database |
+| **NL request** | *"Spin up a dev environment for a static React frontend, no backend needed."* |
+| **Deploy target** | docker-compose (`compose-single-v1`) — a `BUILD_REGISTRY` build-sentinel service, not an off-the-shelf image |
+| **What it proves** | The build-sentinel path (previously only exercised by the RealWorld pair, UC-1/UC-2) generalizes to a **standalone** app with no db and no host-side build steps — the whole build happens inside the repo's own Dockerfile. First real exercise of `iac_generator.ts`'s standalone build-sentinel branch (`needsDatabase: false`, `pairedWith: null`) |
+| **Verify** | `GET http://localhost:<host_port>/` = 200 (static `index.html`) |
+
+**Status: wired into `buildRegistry.ts` (`"vite-react-frontend"` entry).** Full source review and the
+optional real-AWS-CLI manual path live in
+[`source_configuration/new-use-case/01-fargate-demo-vite-react-docker.md`](../source_configuration/new-use-case/01-fargate-demo-vite-react-docker.md)
+— its `run-task` step now arms a 15-minute auto-teardown automatically (`schedule-ecs-auto-teardown.ps1`,
+no separate step to remember), cancelable if you want the demo to run longer.
+
+---
+
+## UC-16 — LIVE HOSTNAME DEMO: nginx-hello (visible proof of a live, non-cached container)
+
+| | |
+|---|---|
+| **Repo** | https://github.com/nginxinc/NGINX-Demos, subfolder `nginx-hello` (pinned commit `611fa05748a4031841e5607cd3069288b0aa9973`) |
+| **Maintainer** | NGINX Inc. — no `LICENSE` file in the repo (low-risk here since nothing is redistributed, only built for an internal demo) |
+| **Stack** | `nginx:mainline-alpine` + `sub_filter`-injected page showing the container's live hostname, address, request URI, timestamp, and per-request ID |
+| **NL request** | *"Give me a quick live demo endpoint that visibly proves it's a real running container, not a cached page."* |
+| **Deploy target** | docker-compose (`compose-single-v1`) — a `BUILD_REGISTRY` build-sentinel service |
+| **What it proves** | The build-sentinel path handles a repo whose **Dockerfile isn't at the repo root** — `nginx-hello/Dockerfile` inside the `NGINX-Demos` monorepo checkout. New `BuildRegistryEntry.dockerfileSubdir` field + `build.ts`'s `isKnownCwd()` support for it generalize the pipeline beyond "every registry entry is a root-level Dockerfile," a real constraint hit while wiring this app in |
+| **Verify** | `curl http://localhost:<host_port>/` = 200, body shows a live hostname/IP/request-id — good demo moment (visible proof, not just a status code) |
+
+**Status: wired into `buildRegistry.ts` (`"nginx-hello"` entry, `dockerfileSubdir: "nginx-hello"`).** Full
+source review and the optional real-AWS-CLI manual path live in
+[`source_configuration/new-use-case/02-fargate-demo-nginx-hello.md`](../source_configuration/new-use-case/02-fargate-demo-nginx-hello.md)
+— its `run-task` step now arms a 15-minute auto-teardown automatically (`schedule-ecs-auto-teardown.ps1`,
+no separate step to remember), cancelable if you want the demo to run longer.
+
+---
+
+## Self-hosting — deploying the Ops Master Agent platform itself to AWS
+
+*Different in kind from UC-1..UC-13 above: those are natural-language requests a user types into the*
+*running app, which the pipeline then plans/generates IaC for. This entry instead documents how the*
+*app itself is hosted — there is no NL request or planner/iac_generator run involved.*
+
+| | |
+|---|---|
+| **What** | Ops Master Agent (Express + WebSocket API, React UI, Supabase-backed audit store) running on AWS ECS Fargate behind an ALB, built and deployed by GitHub Actions on every push to `main` |
+| **Where** | `infra/aws/` (Terraform: ECR, ALB, ECS cluster/task/service, IAM roles, Secrets Manager, GitHub OIDC deploy role), `Dockerfile` (multi-stage build), `.github/workflows/{ci,deploy}.yml` |
+| **Why it's separate from `templates/terraformCatalog.ts`** | `tf-ecs-fargate-v1` there is IaC *the product generates for an end user's request* (fills the retail-store-sample-app's own bundled Terraform module, per UC-9). `infra/aws/` is hand-authored IaC for hosting the *product itself* — conflating the two would mean editing the customer-facing template catalogue every time the platform's own hosting needs changed, and vice versa |
+| **Architecture** | One Fargate task (0.5 vCPU/1GB) runs a single container serving both the API/WebSocket and the built React static files (one origin, no CORS) — see the root `README.md`'s "Deploying to AWS" section for the full diagram |
+| **Cost** | ~$41-45/mo always-on (`us-east-1`); `desired_count=0` between demos drops it to ~$20/mo (ALB only), `terraform destroy` drops it to $0 |
+| **Credentials** | GitHub authenticates to AWS via OIDC (no stored AWS keys in GitHub); `ANTHROPIC_API_KEY`/Bedrock token/Supabase service-role key live in AWS Secrets Manager, injected into the ECS task as `secrets`, never in the image |
+| **Safety** | `ALLOW_AWS_APPLY` is hardcoded `false` on the hosted task — it can never `terraform apply`/`destroy` against the AWS account it runs in. The docker-compose deploy track (most UCs above) auto-simulates on this instance since Fargate has no Docker daemon — `MOCK_DEPLOY=auto` already handles that, identical to a judge's laptop without Docker Desktop |
+
+---
+
 ## Selection summary
 
 | UC | Scenario axis | Effort | Demo value |
@@ -191,5 +298,8 @@ The `balanced` tier renders identically (0 rps stated → sizing floors out at 1
 | 8 | Refusal + rollback | Low | ★★★★★ |
 | 9 | AWS/Terraform multi-tier costing | High | ★★★★★ (runnable — plan-only, never applies to a real account) |
 | 13 | Scoping narrative + turnaround estimate | Low | ★★★★ (shows the "why" and the ROI pitch, not just services/cost) |
+| 14 | AWS single container + ALB (aws-copilot-sample) | Medium | ★★★★ (`BUILD_REGISTRY` wired; real AWS Fargate+ALB still a manual CLI path pending a hand-rolled Terraform template) |
+| 15 | Static frontend, no backend/DB (vite-react-docker) | Low | ★★★ (proves the build-sentinel path generalizes beyond RealWorld — runnable via docker-compose) |
+| 16 | Live hostname demo, subfolder Dockerfile (nginx-hello) | Low | ★★★ (visible live-container proof; runnable via docker-compose) |
 
-Minimum viable demo set: **UC-1, UC-2, UC-7, UC-8** (one repo family + governance story). Add UC-3/4 for variety, UC-5/6 if ahead of schedule, UC-9 to show the multi-tier capacity planning + Terraform/AWS path (plan-only, never applies to a real account), UC-13 to show the included/skipped/task_graph/turnaround scoping narrative.
+Minimum viable demo set: **UC-1, UC-2, UC-7, UC-8** (one repo family + governance story). Add UC-3/4 for variety, UC-5/6 if ahead of schedule, UC-9 to show the multi-tier capacity planning + Terraform/AWS path (plan-only, never applies to a real account), UC-13 to show the included/skipped/task_graph/turnaround scoping narrative, UC-15/UC-16 as low-effort docker-compose variety (both runnable today), UC-14 for a real-AWS Fargate+ALB deploy once its Terraform template lands (today it's `BUILD_REGISTRY`-wired for compose but still a manual CLI path for actual AWS).

@@ -24,8 +24,10 @@ export interface VerifyInput {
    * offline. Real mode ignores this — a genuinely bad config fails naturally.
    */
   forceFail?: boolean;
-  /** UC-9: AWS/Terraform path never has a live endpoint to probe (plan-only, nothing applied) — set to the deploy step's detail message to short-circuit straight to a plan-based verify report. */
+  /** UC-9: AWS/Terraform path never has a live endpoint to probe (plan-only, nothing applied) — set to the deploy step's detail message to short-circuit straight to a plan-based verify report. Ignored when terraformEndpoint (below) is set. */
   terraformDeployDetail?: string;
+  /** UC-9 with ALLOW_AWS_APPLY=true: set to the real URL from deploy.ts's `terraform output` when a live apply succeeded — triggers a real health check against it instead of the plan-only bypass. Deliberately no load test against this endpoint (see runVerify) — a freshly-applied ALB/ECS service under real load is unnecessary risk for a short live demo. */
+  terraformEndpoint?: string;
   /** See DeployInput.mockOverride (nodes/deploy.ts) — same reasoning, kept consistent across the build/deploy/verify chain. */
   mockOverride?: boolean;
 }
@@ -85,6 +87,26 @@ async function runSmokeTest(url: string, targetRps: number, onLog: (l: string) =
 
 /** Deterministic verdict per 06-verify-agent.md: no LLM in the pass/fail decision. */
 export async function runVerify(input: VerifyInput): Promise<VerifyReport> {
+  if (input.terraformEndpoint) {
+    input.onLog(`[verify] real AWS apply — health-checking live endpoint ${input.terraformEndpoint}`);
+    const check = await checkHealth(input.terraformEndpoint, input.onLog);
+    return {
+      request_id: input.requestId,
+      checks: [check],
+      // Deliberately no autocannon load test against a freshly-applied real
+      // AWS endpoint (cold-start failures, real scaling, unnecessary risk
+      // for a short live demo) — health check only, unlike the compose path.
+      smoke_test: null,
+      verdict: check.status === "pass" ? "green" : "red",
+      rolled_back: false,
+      endpoints: [input.terraformEndpoint],
+      summary:
+        check.status === "pass"
+          ? `Real AWS deploy verified: ${input.terraformEndpoint} responded healthy. Load test skipped for this live-apply demo path — see the ALLOW_AWS_APPLY note in the README.`
+          : `Real AWS deploy FAILED verification: ${input.terraformEndpoint} did not respond healthy — triggering rollback (terraform destroy).`,
+    };
+  }
+
   if (input.terraformDeployDetail !== undefined) {
     input.onLog("[verify] terraform plan-only path — no live AWS endpoint exists to health-check");
     return {
